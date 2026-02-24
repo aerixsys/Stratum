@@ -1,0 +1,26 @@
+# Environment and secrets
+.env
+!.env.example
+
+# Build artifacts
+stratum
+bin/
+dist/
+
+# Go test artifacts
+*.test
+*.out
+cover.out
+cover.html
+
+# Logs and temp files
+*.log
+tmp/
+*.tmp
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
