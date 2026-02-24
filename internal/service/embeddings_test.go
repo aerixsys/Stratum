@@ -51,7 +51,7 @@ func TestEmbeddingsService_EmptyInput(t *testing.T) {
 		t.Fatal("expected bad request error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
 		t.Fatalf("expected bad request service error, got %v", err)
 	}
 }
@@ -63,7 +63,7 @@ func TestEmbeddingsService_NilRequest(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
 		t.Fatalf("expected bad request service error, got %v", err)
 	}
 }
@@ -77,7 +77,7 @@ func TestEmbeddingsService_ModelRequiredWithoutFallback(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
 		t.Fatalf("expected bad request service error, got %v", err)
 	}
 }

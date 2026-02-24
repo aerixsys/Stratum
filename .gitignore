@@ -10,8 +10,11 @@ dist/
 # Go test artifacts
 *.test
 *.out
+*.cover
 cover.out
 cover.html
+model-test-report-*.json
+model-test-report-*.csv
 
 # Logs and temp files
 *.log

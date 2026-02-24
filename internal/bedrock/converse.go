@@ -181,235 +181,278 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 
 		out, err := c.BedrockRuntime.ConverseStream(ctx, streamInput)
 		if err != nil {
-			errSSE, _ := marshalSSE(map[string]any{
-				"error": map[string]string{
-					"message": "Upstream model invocation failed",
-				},
-			})
-			dataCh <- errSSE
-			dataCh <- []byte("data: [DONE]\n\n")
+			emitStreamErrorChunk(func(b []byte) { dataCh <- b })
+			emitDone(func(b []byte) { dataCh <- b })
 			return
 		}
 
 		msgID := "chatcmpl-" + shortUUID()
 		now := time.Now().Unix()
 		stream := out.GetStream()
+		if stream == nil {
+			emitStreamErrorChunk(func(b []byte) { dataCh <- b })
+			emitDone(func(b []byte) { dataCh <- b })
+			return
+		}
 		defer stream.Close()
 
-		// Send initial role chunk
-		roleChunk := schema.ChatResponse{
+		emitConverseSSEStream(
+			input,
+			msgID,
+			now,
+			stream.Events(),
+			stream.Err,
+			func(b []byte) { dataCh <- b },
+		)
+	}()
+
+	return dataCh
+}
+
+type streamSSEState struct {
+	currentToolCallIndex int
+	finishReason         string
+	finishChunkSent      bool
+	pendingUsage         *schema.Usage
+}
+
+func emitConverseSSEStream(
+	input *ConverseInput,
+	msgID string,
+	now int64,
+	events <-chan brtypes.ConverseStreamOutput,
+	streamErr func() error,
+	emit func([]byte),
+) {
+	emitRoleChunk(msgID, now, input.ModelID, emit)
+
+	state := &streamSSEState{}
+	for event := range events {
+		handleConverseStreamEvent(input, msgID, now, event, state, emit)
+	}
+
+	if streamErr != nil {
+		if err := streamErr(); err != nil {
+			log.Printf("[stream] Error: %v", err)
+			if !state.finishChunkSent {
+				emitStreamErrorChunk(emit)
+				emitDone(emit)
+				return
+			}
+		}
+	}
+
+	if !state.finishChunkSent {
+		finishReason := state.finishReason
+		if finishReason == "" {
+			finishReason = "stop"
+		}
+		emitSSEValue(schema.ChatResponse{
 			ID:      msgID,
 			Object:  "chat.completion.chunk",
 			Created: now,
 			Model:   input.ModelID,
-			Choices: []schema.Choice{
-				{
-					Index: 0,
-					Delta: &schema.ResponseMessage{Role: "assistant"},
-				},
-			},
-		}
-		if data, err := marshalSSE(roleChunk); err == nil {
-			dataCh <- data
-		}
+			Choices: []schema.Choice{{
+				Index:        0,
+				Delta:        &schema.ResponseMessage{},
+				FinishReason: &finishReason,
+			}},
+		}, emit)
+	}
 
-		var currentToolCallIndex int
-		var finishReason string
-		finishChunkSent := false
+	if state.pendingUsage != nil && input.IncludeUsage {
+		emitSSEValue(schema.ChatResponse{
+			ID:      msgID,
+			Object:  "chat.completion.chunk",
+			Created: now,
+			Model:   input.ModelID,
+			Choices: []schema.Choice{},
+			Usage:   state.pendingUsage,
+		}, emit)
+	}
 
-		for event := range stream.Events() {
-			switch e := event.(type) {
-			case *brtypes.ConverseStreamOutputMemberContentBlockDelta:
-				delta := e.Value.Delta
-				switch d := delta.(type) {
-				case *brtypes.ContentBlockDeltaMemberText:
-					chunk := schema.ChatResponse{
-						ID:      msgID,
-						Object:  "chat.completion.chunk",
-						Created: now,
-						Model:   input.ModelID,
-						Choices: []schema.Choice{{
-							Index: 0,
-							Delta: &schema.ResponseMessage{Content: aws.String(d.Value)},
-						}},
-					}
-					if data, err := marshalSSE(chunk); err == nil {
-						dataCh <- data
-					}
+	emitDone(emit)
+}
 
-				case *brtypes.ContentBlockDeltaMemberReasoningContent:
-					// Handle reasoning/thinking deltas
-					switch rd := d.Value.(type) {
-					case *brtypes.ReasoningContentBlockDeltaMemberText:
-						chunk := schema.ChatResponse{
-							ID:      msgID,
-							Object:  "chat.completion.chunk",
-							Created: now,
-							Model:   input.ModelID,
-							Choices: []schema.Choice{{
-								Index: 0,
-								Delta: &schema.ResponseMessage{Reasoning: aws.String(rd.Value)},
-							}},
-						}
-						if data, err := marshalSSE(chunk); err == nil {
-							dataCh <- data
-						}
-					case *brtypes.ReasoningContentBlockDeltaMemberSignature:
-						chunk := schema.ChatResponse{
-							ID:      msgID,
-							Object:  "chat.completion.chunk",
-							Created: now,
-							Model:   input.ModelID,
-							Choices: []schema.Choice{{
-								Index: 0,
-								Delta: &schema.ResponseMessage{ReasoningSignature: aws.String(rd.Value)},
-							}},
-						}
-						if data, err := marshalSSE(chunk); err == nil {
-							dataCh <- data
-						}
-					case *brtypes.ReasoningContentBlockDeltaMemberRedactedContent:
-						// Encrypted thinking — skip or note
-						_ = rd
-					}
-
-				case *brtypes.ContentBlockDeltaMemberToolUse:
-					idx := currentToolCallIndex
-					chunk := schema.ChatResponse{
-						ID:      msgID,
-						Object:  "chat.completion.chunk",
-						Created: now,
-						Model:   input.ModelID,
-						Choices: []schema.Choice{{
-							Index: 0,
-							Delta: &schema.ResponseMessage{
-								ToolCalls: []schema.ToolCall{{
-									Index: &idx,
-									Type:  "function",
-									Function: schema.ToolCallFunction{
-										Arguments: aws.ToString(d.Value.Input),
-									},
-								}},
-							},
-						}},
-					}
-					if data, err := marshalSSE(chunk); err == nil {
-						dataCh <- data
-					}
-				}
-
-			case *brtypes.ConverseStreamOutputMemberContentBlockStart:
-				start := e.Value.Start
-				if tu, ok := start.(*brtypes.ContentBlockStartMemberToolUse); ok {
-					idx := currentToolCallIndex
-					chunk := schema.ChatResponse{
-						ID:      msgID,
-						Object:  "chat.completion.chunk",
-						Created: now,
-						Model:   input.ModelID,
-						Choices: []schema.Choice{{
-							Index: 0,
-							Delta: &schema.ResponseMessage{
-								ToolCalls: []schema.ToolCall{{
-									Index: &idx,
-									ID:    aws.ToString(tu.Value.ToolUseId),
-									Type:  "function",
-									Function: schema.ToolCallFunction{
-										Name: aws.ToString(tu.Value.Name),
-									},
-								}},
-							},
-						}},
-					}
-					if data, err := marshalSSE(chunk); err == nil {
-						dataCh <- data
-					}
-					currentToolCallIndex++
-				}
-
-			case *brtypes.ConverseStreamOutputMemberMessageStop:
-				finishReason = MapStopReason(e.Value.StopReason)
-				chunk := schema.ChatResponse{
-					ID:      msgID,
-					Object:  "chat.completion.chunk",
-					Created: now,
-					Model:   input.ModelID,
-					Choices: []schema.Choice{{
-						Index:        0,
-						Delta:        &schema.ResponseMessage{},
-						FinishReason: &finishReason,
-					}},
-				}
-				if data, err := marshalSSE(chunk); err == nil {
-					dataCh <- data
-					finishChunkSent = true
-				}
-
-			case *brtypes.ConverseStreamOutputMemberMetadata:
-				if !input.IncludeUsage || e.Value.Usage == nil {
-					continue
-				}
-				usage := &schema.Usage{
-					PromptTokens:     int(aws.ToInt32(e.Value.Usage.InputTokens)),
-					CompletionTokens: int(aws.ToInt32(e.Value.Usage.OutputTokens)),
-					TotalTokens:      int(aws.ToInt32(e.Value.Usage.TotalTokens)),
-				}
-				promptDetails := &schema.PromptTokenDetails{}
-				hasCacheDetails := false
-				if e.Value.Usage.CacheReadInputTokens != nil {
-					promptDetails.CacheReadTokens = int(aws.ToInt32(e.Value.Usage.CacheReadInputTokens))
-					promptDetails.CachedTokens = promptDetails.CacheReadTokens
-					hasCacheDetails = true
-				}
-				if e.Value.Usage.CacheWriteInputTokens != nil {
-					promptDetails.CacheWriteTokens = int(aws.ToInt32(e.Value.Usage.CacheWriteInputTokens))
-					hasCacheDetails = true
-				}
-				if hasCacheDetails {
-					usage.PromptTokensDetails = promptDetails
-				}
-				usageChunk := schema.ChatResponse{
-					ID:      msgID,
-					Object:  "chat.completion.chunk",
-					Created: now,
-					Model:   input.ModelID,
-					Choices: []schema.Choice{},
-					Usage:   usage,
-				}
-				if data, err := marshalSSE(usageChunk); err == nil {
-					dataCh <- data
-				}
-			}
-		}
-
-		if err := stream.Err(); err != nil {
-			log.Printf("[stream] Error: %v", err)
-		}
-		if !finishChunkSent {
-			if finishReason == "" {
-				finishReason = "stop"
-			}
-			chunk := schema.ChatResponse{
+func handleConverseStreamEvent(
+	input *ConverseInput,
+	msgID string,
+	now int64,
+	event brtypes.ConverseStreamOutput,
+	state *streamSSEState,
+	emit func([]byte),
+) {
+	switch e := event.(type) {
+	case *brtypes.ConverseStreamOutputMemberContentBlockDelta:
+		delta := e.Value.Delta
+		switch d := delta.(type) {
+		case *brtypes.ContentBlockDeltaMemberText:
+			emitSSEValue(schema.ChatResponse{
 				ID:      msgID,
 				Object:  "chat.completion.chunk",
 				Created: now,
 				Model:   input.ModelID,
 				Choices: []schema.Choice{{
-					Index:        0,
-					Delta:        &schema.ResponseMessage{},
-					FinishReason: &finishReason,
+					Index: 0,
+					Delta: &schema.ResponseMessage{Content: aws.String(d.Value)},
 				}},
+			}, emit)
+		case *brtypes.ContentBlockDeltaMemberReasoningContent:
+			switch rd := d.Value.(type) {
+			case *brtypes.ReasoningContentBlockDeltaMemberText:
+				emitSSEValue(schema.ChatResponse{
+					ID:      msgID,
+					Object:  "chat.completion.chunk",
+					Created: now,
+					Model:   input.ModelID,
+					Choices: []schema.Choice{{
+						Index: 0,
+						Delta: &schema.ResponseMessage{Reasoning: aws.String(rd.Value)},
+					}},
+				}, emit)
+			case *brtypes.ReasoningContentBlockDeltaMemberSignature:
+				emitSSEValue(schema.ChatResponse{
+					ID:      msgID,
+					Object:  "chat.completion.chunk",
+					Created: now,
+					Model:   input.ModelID,
+					Choices: []schema.Choice{{
+						Index: 0,
+						Delta: &schema.ResponseMessage{ReasoningSignature: aws.String(rd.Value)},
+					}},
+				}, emit)
+			case *brtypes.ReasoningContentBlockDeltaMemberRedactedContent:
+				_ = rd
 			}
-			if data, err := marshalSSE(chunk); err == nil {
-				dataCh <- data
-			}
+		case *brtypes.ContentBlockDeltaMemberToolUse:
+			idx := state.currentToolCallIndex
+			emitSSEValue(schema.ChatResponse{
+				ID:      msgID,
+				Object:  "chat.completion.chunk",
+				Created: now,
+				Model:   input.ModelID,
+				Choices: []schema.Choice{{
+					Index: 0,
+					Delta: &schema.ResponseMessage{
+						ToolCalls: []schema.ToolCall{{
+							Index: &idx,
+							Type:  "function",
+							Function: schema.ToolCallFunction{
+								Arguments: aws.ToString(d.Value.Input),
+							},
+						}},
+					},
+				}},
+			}, emit)
 		}
+	case *brtypes.ConverseStreamOutputMemberContentBlockStart:
+		start := e.Value.Start
+		if tu, ok := start.(*brtypes.ContentBlockStartMemberToolUse); ok {
+			idx := state.currentToolCallIndex
+			emitSSEValue(schema.ChatResponse{
+				ID:      msgID,
+				Object:  "chat.completion.chunk",
+				Created: now,
+				Model:   input.ModelID,
+				Choices: []schema.Choice{{
+					Index: 0,
+					Delta: &schema.ResponseMessage{
+						ToolCalls: []schema.ToolCall{{
+							Index: &idx,
+							ID:    aws.ToString(tu.Value.ToolUseId),
+							Type:  "function",
+							Function: schema.ToolCallFunction{
+								Name: aws.ToString(tu.Value.Name),
+							},
+						}},
+					},
+				}},
+			}, emit)
+			state.currentToolCallIndex++
+		}
+	case *brtypes.ConverseStreamOutputMemberMessageStop:
+		state.finishReason = MapStopReason(e.Value.StopReason)
+		emitSSEValue(schema.ChatResponse{
+			ID:      msgID,
+			Object:  "chat.completion.chunk",
+			Created: now,
+			Model:   input.ModelID,
+			Choices: []schema.Choice{{
+				Index:        0,
+				Delta:        &schema.ResponseMessage{},
+				FinishReason: &state.finishReason,
+			}},
+		}, emit)
+		state.finishChunkSent = true
+	case *brtypes.ConverseStreamOutputMemberMetadata:
+		if !input.IncludeUsage || e.Value.Usage == nil {
+			return
+		}
+		state.pendingUsage = buildUsageFromTokenUsage(e.Value.Usage)
+	}
+}
 
-		// Send [DONE]
-		dataCh <- []byte("data: [DONE]\n\n")
-	}()
+func emitRoleChunk(msgID string, now int64, modelID string, emit func([]byte)) {
+	emitSSEValue(schema.ChatResponse{
+		ID:      msgID,
+		Object:  "chat.completion.chunk",
+		Created: now,
+		Model:   modelID,
+		Choices: []schema.Choice{
+			{
+				Index: 0,
+				Delta: &schema.ResponseMessage{Role: "assistant"},
+			},
+		},
+	}, emit)
+}
 
-	return dataCh
+func emitSSEValue(v interface{}, emit func([]byte)) {
+	data, err := marshalSSE(v)
+	if err != nil {
+		return
+	}
+	emit(data)
+}
+
+func emitStreamErrorChunk(emit func([]byte)) {
+	emitSSEValue(map[string]any{
+		"error": map[string]string{
+			"message": "Upstream model invocation failed",
+		},
+	}, emit)
+}
+
+func emitDone(emit func([]byte)) {
+	emit([]byte("data: [DONE]\n\n"))
+}
+
+func buildUsageFromTokenUsage(usage *brtypes.TokenUsage) *schema.Usage {
+	if usage == nil {
+		return nil
+	}
+	out := &schema.Usage{
+		PromptTokens:     int(aws.ToInt32(usage.InputTokens)),
+		CompletionTokens: int(aws.ToInt32(usage.OutputTokens)),
+		TotalTokens:      int(aws.ToInt32(usage.TotalTokens)),
+	}
+
+	promptDetails := &schema.PromptTokenDetails{}
+	hasCacheDetails := false
+	if usage.CacheReadInputTokens != nil {
+		promptDetails.CacheReadTokens = int(aws.ToInt32(usage.CacheReadInputTokens))
+		promptDetails.CachedTokens = promptDetails.CacheReadTokens
+		hasCacheDetails = true
+	}
+	if usage.CacheWriteInputTokens != nil {
+		promptDetails.CacheWriteTokens = int(aws.ToInt32(usage.CacheWriteInputTokens))
+		hasCacheDetails = true
+	}
+	if hasCacheDetails {
+		out.PromptTokensDetails = promptDetails
+	}
+
+	return out
 }
 
 func marshalSSE(v interface{}) ([]byte, error) {
@@ -537,17 +580,6 @@ func smithyDocumentToRaw(doc document.Interface) json.RawMessage {
 		return nil
 	}
 	return b
-}
-
-// buildThinkingFields creates the additionalModelRequestFields document
-// for extended thinking configuration.
-func buildThinkingFields(cfg *ThinkingConfig) document.Interface {
-	return document.NewLazyDocument(map[string]interface{}{
-		"thinking": map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": cfg.BudgetToken,
-		},
-	})
 }
 
 func shortUUID() string {

@@ -1,0 +1,44 @@
+name: nightly-smoke
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare smoke run
+        run: |
+          if [ -z "${{ secrets.STRATUM_BASE_URL }}" ] || [ -z "${{ secrets.STRATUM_API_KEY }}" ] || [ -z "${{ secrets.STRATUM_CHAT_MODEL }}" ] || [ -z "${{ secrets.STRATUM_EMBEDDING_MODEL }}" ]; then
+            {
+              echo "Stratum Smoke Report"
+              echo "Generated: $(date -u +\"%Y-%m-%dT%H:%M:%SZ\")"
+              echo
+              echo "SKIP | smoke | required secrets are not configured"
+              echo
+              echo "Summary: pass=0 fail=0 skip=1"
+            } > smoke-report.txt
+            echo "SMOKE_SKIP=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run smoke harness
+        if: env.SMOKE_SKIP != '1'
+        run: |
+          ./scripts/smoke_bedrock.sh \
+            --base-url "${{ secrets.STRATUM_BASE_URL }}" \
+            --api-key "${{ secrets.STRATUM_API_KEY }}" \
+            --chat-model "${{ secrets.STRATUM_CHAT_MODEL }}" \
+            --embedding-model "${{ secrets.STRATUM_EMBEDDING_MODEL }}" \
+            --report-path smoke-report.txt
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: smoke-report.txt

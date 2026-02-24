@@ -98,7 +98,7 @@ func TestChatService_RejectUnsupportedModel(t *testing.T) {
 		t.Fatalf("expected error for unsupported model")
 	}
 	var svcErr *Error
-	if err == nil || !asServiceError(err, &svcErr) {
+	if !errors.As(err, &svcErr) {
 		t.Fatalf("expected service error, got %T", err)
 	}
 	if svcErr.Kind != ErrorBadRequest {
@@ -150,7 +150,7 @@ func TestChatService_NilRequest(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
 		t.Fatalf("expected bad request service error, got %v", err)
 	}
 }
@@ -164,7 +164,7 @@ func TestChatService_ModelRequiredWithoutFallback(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
 		t.Fatalf("expected bad request service error, got %v", err)
 	}
 }
@@ -179,7 +179,7 @@ func TestChatService_ModelLookupError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorInternal {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorInternal {
 		t.Fatalf("expected internal service error, got %v", err)
 	}
 }
@@ -198,7 +198,7 @@ func TestChatService_TranslateError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
 		t.Fatalf("expected bad request service error, got %v", err)
 	}
 }

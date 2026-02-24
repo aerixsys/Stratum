@@ -50,7 +50,7 @@ func TestModelsService_GetNotFound(t *testing.T) {
 		t.Fatal("expected not found error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorNotFound {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorNotFound {
 		t.Fatalf("expected not found service error, got %v", err)
 	}
 }
@@ -62,7 +62,7 @@ func TestModelsService_ListError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorInternal {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorInternal {
 		t.Fatalf("expected internal service error, got %v", err)
 	}
 }
@@ -74,7 +74,7 @@ func TestModelsService_GetEmptyID(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	var svcErr *Error
-	if !asServiceError(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
 		t.Fatalf("expected bad request service error, got %v", err)
 	}
 }

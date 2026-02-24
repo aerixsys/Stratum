@@ -109,7 +109,7 @@ func TestParseUserContent_EmptyImageObject(t *testing.T) {
 	}
 }
 
-func TestHelperCoverage(t *testing.T) {
+func TestReasoningBudgetMapping(t *testing.T) {
 	if reasoningBudget("low") != 1024 {
 		t.Fatalf("unexpected low reasoning budget")
 	}
@@ -119,6 +119,9 @@ func TestHelperCoverage(t *testing.T) {
 	if reasoningBudget("unknown") != 4096 {
 		t.Fatalf("unexpected default reasoning budget")
 	}
+}
+
+func TestImageFormatMapping(t *testing.T) {
 	if imageFormat("image/webp") != brtypes.ImageFormatWebp {
 		t.Fatalf("expected webp")
 	}

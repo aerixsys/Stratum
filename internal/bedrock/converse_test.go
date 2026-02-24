@@ -196,14 +196,6 @@ func TestMapStopReason(t *testing.T) {
 	}
 }
 
-func TestBuildThinkingFields(t *testing.T) {
-	cfg := &ThinkingConfig{Enabled: true, BudgetToken: 4096}
-	doc := buildThinkingFields(cfg)
-	if doc == nil {
-		t.Fatal("expected non-nil document")
-	}
-}
-
 func TestConvertConverseOutput_AdditionalFields(t *testing.T) {
 	out := &bedrockruntime.ConverseOutput{
 		Output: &brtypes.ConverseOutputMemberMessage{

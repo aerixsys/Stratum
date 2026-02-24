@@ -6,6 +6,8 @@ The runtime architecture intentionally remains:
 - Gateway Bearer API key auth for clients.
 - AWS credentials/role auth upstream to Bedrock.
 - No Bedrock native `/openai/v1` endpoint mode in this release.
+- No Bedrock API-key auth mode in this release.
+- Deployment target: self-hosted VPS.
 
 ## Features
 
@@ -28,6 +30,21 @@ cp .env.example .env
 go build -o stratum ./cmd/server
 ./stratum
 ```
+
+## VPS Deployment (Compose Only)
+
+This release supports self-hosted VPS deployment with Docker Compose only.
+
+```bash
+cp .env.example .env
+docker compose build --pull
+docker compose up -d
+curl -sS http://127.0.0.1:8000/ready
+```
+
+Operational docs:
+- `docs/vps-deploy.md`
+- `docs/secret-rotation.md`
 
 ## API Endpoints
 
@@ -83,10 +100,28 @@ Example:
 
 ```bash
 go test ./...
+go test ./... -race
 go test ./... -coverprofile=cover.out
 go tool cover -func=cover.out
 go tool cover -html=cover.out
+./scripts/check_coverage.sh
 ```
+
+## Smoke Harness
+
+Run compatibility smoke checks and generate a pass/fail report:
+
+```bash
+./scripts/smoke_bedrock.sh \
+  --base-url http://127.0.0.1:8000 \
+  --api-key '<API_KEY>' \
+  --chat-model 'anthropic.claude-sonnet-4-5-20250929-v1:0' \
+  --embedding-model 'cohere.embed-multilingual-v3' \
+  --report-path smoke-report.txt
+```
+
+Reference:
+- `docs/smoke-matrix.md`
 
 ## Configuration
 
@@ -96,3 +131,5 @@ See `.env.example` for full configuration. Important controls include:
 - `RATE_LIMIT_RPM`, `RATE_LIMIT_BURST`
 - `ALLOW_PRIVATE_IMAGE_FETCH`, `IMAGE_MAX_BYTES`, `IMAGE_FETCH_TIMEOUT_SECONDS`
 - `ENABLE_METRICS`
+
+No additional runtime env keys were introduced in this finalization cycle.
