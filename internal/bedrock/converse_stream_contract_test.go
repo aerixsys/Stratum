@@ -136,8 +136,22 @@ func TestEmitConverseSSEStream_OrderAndSchema(t *testing.T) {
 	if _, ok := usage["usage"]; !ok {
 		t.Fatalf("expected usage chunk after finish")
 	}
-	if got := int(usage["usage"].(map[string]interface{})["prompt_tokens"].(float64)); got != 10 {
+	usageMap := usage["usage"].(map[string]interface{})
+	if got := int(usageMap["prompt_tokens"].(float64)); got != 10 {
 		t.Fatalf("unexpected prompt_tokens in usage: %d", got)
+	}
+	completionDetails, ok := usageMap["completion_tokens_details"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected completion_tokens_details in usage chunk, got %+v", usageMap)
+	}
+	if got := int(completionDetails["reasoning_tokens"].(float64)); got <= 0 {
+		t.Fatalf("expected positive reasoning_tokens estimate in stream usage, got %d", got)
+	}
+	if got := completionDetails["reasoning_tokens_estimated"]; got != true {
+		t.Fatalf("expected reasoning_tokens_estimated=true, got %+v", got)
+	}
+	if got := mapString(completionDetails, "reasoning_tokens_method"); got != reasoningTokenEstimateMethod {
+		t.Fatalf("expected reasoning_tokens_method=%q, got %q", reasoningTokenEstimateMethod, got)
 	}
 
 	if string(chunks[8]) != "data: [DONE]\n\n" {

@@ -296,7 +296,9 @@ type PromptTokenDetails struct {
 }
 
 type CompletionTokensDetails struct {
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	ReasoningTokens          int    `json:"reasoning_tokens,omitempty"`
+	ReasoningTokensEstimated bool   `json:"reasoning_tokens_estimated"`
+	ReasoningTokensMethod    string `json:"reasoning_tokens_method,omitempty"`
 }
 
 // -- Models --

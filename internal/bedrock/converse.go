@@ -15,6 +15,8 @@ import (
 	"github.com/stratum/gateway/internal/schema"
 )
 
+const reasoningTokenEstimateMethod = "char_ratio_v1"
+
 // Converse calls the synchronous Bedrock Converse API and returns an OpenAI ChatResponse.
 func (c *Client) Converse(ctx context.Context, input *ConverseInput) (*schema.ChatResponse, error) {
 	converseInput := &bedrockruntime.ConverseInput{
@@ -46,6 +48,7 @@ func convertConverseOutput(out *bedrockruntime.ConverseOutput, modelID string) *
 
 	var content string
 	var reasoning string
+	var reasoningTextLen int
 	var reasoningSignature string
 	var toolCalls []schema.ToolCall
 
@@ -70,6 +73,7 @@ func convertConverseOutput(out *bedrockruntime.ConverseOutput, modelID string) *
 					case *brtypes.ReasoningContentBlockMemberReasoningText:
 						if rc.Value.Text != nil {
 							reasoning += *rc.Value.Text
+							reasoningTextLen += len(*rc.Value.Text)
 						}
 						if rc.Value.Signature != nil {
 							reasoningSignature = *rc.Value.Signature
@@ -110,6 +114,14 @@ func convertConverseOutput(out *bedrockruntime.ConverseOutput, modelID string) *
 		}
 		if hasCacheDetails {
 			usage.PromptTokensDetails = promptDetails
+		}
+
+		// Estimate reasoning tokens from character ratio.
+		// Bedrock outputTokens includes both reasoning + output combined.
+		// We use only real reasoning text length (not redacted placeholders).
+		if reasoningTextLen > 0 {
+			estimated := estimateReasoningTokens(usage.CompletionTokens, reasoningTextLen, len(content))
+			usage.CompletionTokensDetails = estimatedCompletionTokenDetails(estimated)
 		}
 	}
 
@@ -214,6 +226,8 @@ type streamSSEState struct {
 	finishReason         string
 	finishChunkSent      bool
 	pendingUsage         *schema.Usage
+	reasoningTextLen     int
+	contentLen           int
 }
 
 func emitConverseSSEStream(
@@ -287,6 +301,7 @@ func handleConverseStreamEvent(
 		delta := e.Value.Delta
 		switch d := delta.(type) {
 		case *brtypes.ContentBlockDeltaMemberText:
+			state.contentLen += len(d.Value)
 			emitSSEValue(schema.ChatResponse{
 				ID:      msgID,
 				Object:  "chat.completion.chunk",
@@ -300,6 +315,7 @@ func handleConverseStreamEvent(
 		case *brtypes.ContentBlockDeltaMemberReasoningContent:
 			switch rd := d.Value.(type) {
 			case *brtypes.ReasoningContentBlockDeltaMemberText:
+				state.reasoningTextLen += len(rd.Value)
 				emitSSEValue(schema.ChatResponse{
 					ID:      msgID,
 					Object:  "chat.completion.chunk",
@@ -388,7 +404,13 @@ func handleConverseStreamEvent(
 		if !input.IncludeUsage || e.Value.Usage == nil {
 			return
 		}
-		state.pendingUsage = buildUsageFromTokenUsage(e.Value.Usage)
+		usage := buildUsageFromTokenUsage(e.Value.Usage)
+		// Estimate reasoning tokens from accumulated text lengths
+		if state.reasoningTextLen > 0 && usage != nil {
+			estimated := estimateReasoningTokens(usage.CompletionTokens, state.reasoningTextLen, state.contentLen)
+			usage.CompletionTokensDetails = estimatedCompletionTokenDetails(estimated)
+		}
+		state.pendingUsage = usage
 	}
 }
 
@@ -585,4 +607,34 @@ func smithyDocumentToRaw(doc document.Interface) json.RawMessage {
 func shortUUID() string {
 	u := uuid.New()
 	return u.String()[:8]
+}
+
+func estimatedCompletionTokenDetails(estimated int) *schema.CompletionTokensDetails {
+	if estimated <= 0 {
+		return nil
+	}
+	return &schema.CompletionTokensDetails{
+		ReasoningTokens:          estimated,
+		ReasoningTokensEstimated: true,
+		ReasoningTokensMethod:    reasoningTokenEstimateMethod,
+	}
+}
+
+// estimateReasoningTokens splits outputTokens proportionally between reasoning
+// and content based on their character lengths. Bedrock's outputTokens includes
+// both reasoning and regular output combined — this gives us a good estimate
+// without needing a tokenizer library.
+func estimateReasoningTokens(outputTokens, reasoningLen, contentLen int) int {
+	if outputTokens <= 0 || reasoningLen <= 0 {
+		return 0
+	}
+	totalLen := reasoningLen + contentLen
+	if totalLen <= 0 {
+		return 0
+	}
+	estimated := int(float64(outputTokens) * float64(reasoningLen) / float64(totalLen))
+	if estimated > outputTokens {
+		estimated = outputTokens
+	}
+	return estimated
 }

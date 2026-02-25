@@ -55,6 +55,16 @@ Policy file: `config/model-policy.yaml`
 - Blocked chat model request returns `400 invalid_request_error`
 - Restart service after policy edits
 
+## Usage Notes (Reasoning Models)
+
+- Bedrock usage reports `prompt_tokens`, `completion_tokens`, and `total_tokens` (plus cache fields).
+- Bedrock does not provide a native standalone `reasoning_tokens` field in usage.
+- For reasoning-capable responses, Stratum may include:
+  - `usage.completion_tokens_details.reasoning_tokens`
+  - `usage.completion_tokens_details.reasoning_tokens_estimated=true`
+  - `usage.completion_tokens_details.reasoning_tokens_method="char_ratio_v1"`
+- Treat this reasoning split as analytics-oriented estimate, not authoritative upstream billing data.
+
 ## Test Commands
 
 ```bash
