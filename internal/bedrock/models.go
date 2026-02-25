@@ -68,21 +68,24 @@ func (mc *ModelCache) discoverModels(ctx context.Context) ([]schema.Model, error
 	now := time.Now().Unix()
 	seen := make(map[string]bool)
 	var models []schema.Model
+	foundationsForProfiles := make(map[string]bool)
 
-	// 1. List foundation models (on-demand, Converse-capable)
+	// 1. List foundation models (on-demand, text-output capable)
 	fmOut, err := mc.client.Bedrock.ListFoundationModels(ctx, &bedrock.ListFoundationModelsInput{})
 	if err != nil {
 		return nil, fmt.Errorf("ListFoundationModels: %w", err)
 	}
 	for _, fm := range fmOut.ModelSummaries {
-		id := aws.ToString(fm.ModelId)
+		id := strings.TrimSpace(aws.ToString(fm.ModelId))
 		if id == "" || seen[id] {
 			continue
 		}
-		// Only include models that support on-demand and converse
-		if !supportsOnDemand(fm) || !supportsConverse(fm) {
+
+		foundationsForProfiles[id] = supportsTextOutput(fm) && !hasDisallowedOutputModalities(fm)
+		if !supportsOnDemand(fm) || !foundationsForProfiles[id] {
 			continue
 		}
+
 		seen[id] = true
 		models = append(models, schema.Model{
 			ID:      id,
@@ -110,6 +113,9 @@ func (mc *ModelCache) discoverModels(ctx context.Context) ([]schema.Model, error
 					continue
 				}
 				if isApp && !mc.client.Config.EnableAppInferenceProfile {
+					continue
+				}
+				if !profileSupportsTextOnlyOutputs(profile, foundationsForProfiles) {
 					continue
 				}
 
@@ -156,15 +162,47 @@ func supportsOnDemand(fm bedrocktypes.FoundationModelSummary) bool {
 	return false
 }
 
-func supportsConverse(fm bedrocktypes.FoundationModelSummary) bool {
-	// Check if the model supports streaming (indicates Converse capability)
-	// Models without streaming are typically legacy/embed-only
+func supportsTextOutput(fm bedrocktypes.FoundationModelSummary) bool {
 	for _, mode := range fm.OutputModalities {
 		if mode == bedrocktypes.ModelModalityText {
 			return true
 		}
 	}
 	return false
+}
+
+func hasDisallowedOutputModalities(fm bedrocktypes.FoundationModelSummary) bool {
+	for _, mode := range fm.OutputModalities {
+		if mode != bedrocktypes.ModelModalityText {
+			return true
+		}
+	}
+	return false
+}
+
+func profileSupportsTextOnlyOutputs(profile bedrocktypes.InferenceProfileSummary, foundations map[string]bool) bool {
+	if len(profile.Models) == 0 {
+		return false
+	}
+	for _, model := range profile.Models {
+		modelID := modelIDFromFoundationARN(aws.ToString(model.ModelArn))
+		if modelID == "" {
+			return false
+		}
+		if !foundations[modelID] {
+			return false
+		}
+	}
+	return true
+}
+
+func modelIDFromFoundationARN(modelARN string) string {
+	const marker = "foundation-model/"
+	idx := strings.Index(modelARN, marker)
+	if idx == -1 {
+		return ""
+	}
+	return strings.TrimSpace(modelARN[idx+len(marker):])
 }
 
 // FindModel checks if a model ID exists.

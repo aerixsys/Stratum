@@ -2,7 +2,6 @@ package bedrock
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -15,13 +14,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/stratum/gateway/internal/config"
-	"github.com/stratum/gateway/internal/schema"
 )
 
 type fakeRuntimeAPI struct {
 	converseFn       func(ctx context.Context, params *bedrockruntime.ConverseInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error)
 	converseStreamFn func(ctx context.Context, params *bedrockruntime.ConverseStreamInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseStreamOutput, error)
-	invokeFn         func(ctx context.Context, params *bedrockruntime.InvokeModelInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error)
 }
 
 func (f *fakeRuntimeAPI) Converse(ctx context.Context, params *bedrockruntime.ConverseInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error) {
@@ -36,13 +33,6 @@ func (f *fakeRuntimeAPI) ConverseStream(ctx context.Context, params *bedrockrunt
 		return f.converseStreamFn(ctx, params, optFns...)
 	}
 	return nil, errors.New("ConverseStream not implemented")
-}
-
-func (f *fakeRuntimeAPI) InvokeModel(ctx context.Context, params *bedrockruntime.InvokeModelInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error) {
-	if f.invokeFn != nil {
-		return f.invokeFn(ctx, params, optFns...)
-	}
-	return nil, errors.New("InvokeModel not implemented")
 }
 
 type fakeBedrockAPI struct {
@@ -216,51 +206,6 @@ func TestApplyConverseStreamFields(t *testing.T) {
 	}
 }
 
-func TestEmbed_CohereAndTitanPaths(t *testing.T) {
-	callCount := 0
-	rt := &fakeRuntimeAPI{
-		invokeFn: func(ctx context.Context, params *bedrockruntime.InvokeModelInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error) {
-			callCount++
-			model := aws.ToString(params.ModelId)
-			if strings.Contains(strings.ToLower(model), "cohere") {
-				return &bedrockruntime.InvokeModelOutput{
-					Body: []byte(`{"embeddings":[[0.1],[0.2]],"texts":["a","b"]}`),
-				}, nil
-			}
-			return &bedrockruntime.InvokeModelOutput{
-				Body: []byte(`{"embedding":[0.5,0.7],"inputTextTokenCount":3}`),
-			}, nil
-		},
-	}
-	c := &Client{BedrockRuntime: rt, Config: &config.Config{}}
-
-	cohereResp, err := c.Embed(context.Background(), &schema.EmbeddingRequest{
-		Model: "cohere.embed-multilingual-v3",
-		Input: json.RawMessage(`["a","b"]`),
-	})
-	if err != nil {
-		t.Fatalf("cohere embed error: %v", err)
-	}
-	if len(cohereResp.Data) != 2 {
-		t.Fatalf("expected 2 cohere embeddings, got %d", len(cohereResp.Data))
-	}
-
-	titanResp, err := c.Embed(context.Background(), &schema.EmbeddingRequest{
-		Model: "amazon.titan-embed-text-v2:0",
-		Input: json.RawMessage(`["x","y"]`),
-	})
-	if err != nil {
-		t.Fatalf("titan embed error: %v", err)
-	}
-	if len(titanResp.Data) != 2 {
-		t.Fatalf("expected 2 titan embeddings, got %d", len(titanResp.Data))
-	}
-	// 1 invoke for cohere + 2 invokes for titan inputs
-	if callCount != 3 {
-		t.Fatalf("unexpected invoke count: %d", callCount)
-	}
-}
-
 func TestModelCache_DiscoveryAndFind(t *testing.T) {
 	now := time.Now()
 	br := &fakeBedrockAPI{
@@ -269,6 +214,11 @@ func TestModelCache_DiscoveryAndFind(t *testing.T) {
 				{
 					ModelId:                 aws.String("amazon.nova-micro-v1:0"),
 					InferenceTypesSupported: []bedrocktypes.InferenceType{bedrocktypes.InferenceTypeOnDemand},
+					OutputModalities:        []bedrocktypes.ModelModality{bedrocktypes.ModelModalityText},
+				},
+				{
+					ModelId:                 aws.String("meta.llama3-1-8b-instruct-v1:0"),
+					InferenceTypesSupported: []bedrocktypes.InferenceType{bedrocktypes.InferenceTypeProvisioned},
 					OutputModalities:        []bedrocktypes.ModelModality{bedrocktypes.ModelModalityText},
 				},
 				{
@@ -286,8 +236,10 @@ func TestModelCache_DiscoveryAndFind(t *testing.T) {
 					InferenceProfileName: aws.String("system"),
 					Type:                 bedrocktypes.InferenceProfileTypeSystemDefined,
 					Status:               bedrocktypes.InferenceProfileStatusActive,
-					Models:               []bedrocktypes.InferenceProfileModel{},
-					CreatedAt:            &now,
+					Models: []bedrocktypes.InferenceProfileModel{
+						{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-8b-instruct-v1:0")},
+					},
+					CreatedAt: &now,
 				},
 				{
 					InferenceProfileId:   aws.String("app.profile.1"),
@@ -295,8 +247,10 @@ func TestModelCache_DiscoveryAndFind(t *testing.T) {
 					InferenceProfileName: aws.String("app"),
 					Type:                 bedrocktypes.InferenceProfileTypeApplication,
 					Status:               bedrocktypes.InferenceProfileStatusActive,
-					Models:               []bedrocktypes.InferenceProfileModel{},
-					CreatedAt:            &now,
+					Models: []bedrocktypes.InferenceProfileModel{
+						{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0")},
+					},
+					CreatedAt: &now,
 				},
 			},
 		},
@@ -345,15 +299,45 @@ func TestModelCapabilityHelpers(t *testing.T) {
 	}) {
 		t.Fatalf("expected on-demand support false")
 	}
-	if !supportsConverse(bedrocktypes.FoundationModelSummary{
+	if !supportsTextOutput(bedrocktypes.FoundationModelSummary{
 		OutputModalities: []bedrocktypes.ModelModality{bedrocktypes.ModelModalityText},
 	}) {
-		t.Fatalf("expected converse support true")
+		t.Fatalf("expected text output support true")
 	}
-	if supportsConverse(bedrocktypes.FoundationModelSummary{
+	if supportsTextOutput(bedrocktypes.FoundationModelSummary{
 		OutputModalities: []bedrocktypes.ModelModality{bedrocktypes.ModelModalityImage},
 	}) {
-		t.Fatalf("expected converse support false")
+		t.Fatalf("expected text output support false")
+	}
+	if !hasDisallowedOutputModalities(bedrocktypes.FoundationModelSummary{
+		OutputModalities: []bedrocktypes.ModelModality{bedrocktypes.ModelModalityImage},
+	}) {
+		t.Fatalf("expected disallowed output modality true")
+	}
+	if hasDisallowedOutputModalities(bedrocktypes.FoundationModelSummary{
+		OutputModalities: []bedrocktypes.ModelModality{bedrocktypes.ModelModalityText},
+	}) {
+		t.Fatalf("expected disallowed output modality false")
+	}
+	if got := modelIDFromFoundationARN("arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-8b-instruct-v1:0"); got != "meta.llama3-1-8b-instruct-v1:0" {
+		t.Fatalf("unexpected model id parse: %q", got)
+	}
+	if got := modelIDFromFoundationARN("arn:aws:bedrock:us-east-1::inference-profile/us.meta.llama3"); got != "" {
+		t.Fatalf("expected empty parse for non-foundation arn, got %q", got)
+	}
+	if !profileSupportsTextOnlyOutputs(bedrocktypes.InferenceProfileSummary{
+		Models: []bedrocktypes.InferenceProfileModel{
+			{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-8b-instruct-v1:0")},
+		},
+	}, map[string]bool{"meta.llama3-1-8b-instruct-v1:0": true}) {
+		t.Fatalf("expected profile eligibility true")
+	}
+	if profileSupportsTextOnlyOutputs(bedrocktypes.InferenceProfileSummary{
+		Models: []bedrocktypes.InferenceProfileModel{
+			{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-8b-instruct-v1:0")},
+		},
+	}, map[string]bool{"meta.llama3-1-8b-instruct-v1:0": false}) {
+		t.Fatalf("expected profile eligibility false")
 	}
 }
 

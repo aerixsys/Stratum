@@ -4,7 +4,6 @@ set -euo pipefail
 BASE_URL=""
 API_KEY=""
 CHAT_MODEL=""
-EMBEDDING_MODEL=""
 PROFILE_MODEL=""
 APP_PROFILE_MODEL=""
 REASONING_MODEL=""
@@ -15,13 +14,12 @@ REPORT_PATH="smoke-report.txt"
 
 usage() {
   cat <<USAGE
-Usage: $0 --base-url URL --api-key KEY --chat-model MODEL --embedding-model MODEL [options]
+Usage: $0 --base-url URL --api-key KEY --chat-model MODEL [options]
 
 Required:
   --base-url URL              Gateway base URL (e.g. http://127.0.0.1:8000)
   --api-key KEY               Stratum API key
   --chat-model MODEL          Chat model/profile ID
-  --embedding-model MODEL     Embedding model ID
 
 Optional:
   --profile-model MODEL       Cross-region profile model ID
@@ -39,7 +37,6 @@ while [[ $# -gt 0 ]]; do
     --base-url) BASE_URL="$2"; shift 2 ;;
     --api-key) API_KEY="$2"; shift 2 ;;
     --chat-model) CHAT_MODEL="$2"; shift 2 ;;
-    --embedding-model) EMBEDDING_MODEL="$2"; shift 2 ;;
     --profile-model) PROFILE_MODEL="$2"; shift 2 ;;
     --app-profile-model) APP_PROFILE_MODEL="$2"; shift 2 ;;
     --reasoning-model) REASONING_MODEL="$2"; shift 2 ;;
@@ -52,7 +49,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$BASE_URL" || -z "$API_KEY" || -z "$CHAT_MODEL" || -z "$EMBEDDING_MODEL" ]]; then
+if [[ -z "$BASE_URL" || -z "$API_KEY" || -z "$CHAT_MODEL" ]]; then
   usage
   exit 1
 fi
@@ -230,17 +227,6 @@ check_profiles() {
   fi
 }
 
-check_embeddings() {
-  local payload
-  payload='{"model":"'"${EMBEDDING_MODEL}"'","input":"hello embeddings"}'
-  run_request POST /v1/embeddings "$payload"
-  if [[ "$REQ_STATUS" == "200" ]] && [[ "$REQ_BODY" == *'"object":"list"'* ]]; then
-    record_pass "embeddings" "200"
-  else
-    record_fail "embeddings" "status=${REQ_STATUS} body=${REQ_BODY}"
-  fi
-}
-
 check_multimodal() {
   local image_url payload
   if [[ -n "$MULTIMODAL_IMAGE_URL" ]]; then
@@ -293,7 +279,6 @@ check_tool_call
 check_reasoning
 check_prompt_caching
 check_profiles
-check_embeddings
 check_multimodal
 check_guardrail
 check_error_mapping

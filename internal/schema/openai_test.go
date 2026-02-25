@@ -53,24 +53,6 @@ func TestMessage_ContentParts(t *testing.T) {
 	})
 }
 
-func TestEmbeddingRequest_InputStrings(t *testing.T) {
-	t.Run("single string", func(t *testing.T) {
-		req := EmbeddingRequest{Input: json.RawMessage(`"hello"`)}
-		got := req.InputStrings()
-		if len(got) != 1 || got[0] != "hello" {
-			t.Errorf("expected [hello], got %v", got)
-		}
-	})
-
-	t.Run("array of strings", func(t *testing.T) {
-		req := EmbeddingRequest{Input: json.RawMessage(`["a","b","c"]`)}
-		got := req.InputStrings()
-		if len(got) != 3 {
-			t.Errorf("expected 3 strings, got %d", len(got))
-		}
-	})
-}
-
 func TestChatRequest_ParseToolChoice(t *testing.T) {
 	tests := []struct {
 		name     string

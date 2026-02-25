@@ -4,7 +4,6 @@ set -euo pipefail
 BASE_URL="http://127.0.0.1:8000"
 API_KEY="${API_KEY:-}"
 ENV_FILE=".env"
-MODE="auto" # auto | chat | embeddings
 LIMIT=0
 TIMEOUT_SEC=90
 DELAY_SEC="0.10"
@@ -21,7 +20,6 @@ Options:
   --base-url URL         Gateway base URL (default: http://127.0.0.1:8000)
   --api-key KEY          API key (defaults to API_KEY env or .env file)
   --env-file PATH        Env file to load API key from (default: .env)
-  --mode MODE            auto | chat | embeddings (default: auto)
   --limit N              Test only first N models (default: 0 = all)
   --timeout-sec N        Request timeout seconds (default: 90)
   --delay-sec SEC        Delay between requests in seconds (default: 0.10)
@@ -42,7 +40,6 @@ while [[ $# -gt 0 ]]; do
     --base-url) BASE_URL="$2"; shift 2 ;;
     --api-key) API_KEY="$2"; shift 2 ;;
     --env-file) ENV_FILE="$2"; shift 2 ;;
-    --mode) MODE="$2"; shift 2 ;;
     --limit) LIMIT="$2"; shift 2 ;;
     --timeout-sec) TIMEOUT_SEC="$2"; shift 2 ;;
     --delay-sec) DELAY_SEC="$2"; shift 2 ;;
@@ -57,11 +54,6 @@ done
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq is required. Install it first (sudo apt install -y jq)." >&2
-  exit 1
-fi
-
-if [[ "$MODE" != "auto" && "$MODE" != "chat" && "$MODE" != "embeddings" ]]; then
-  echo "ERROR: --mode must be one of: auto, chat, embeddings" >&2
   exit 1
 fi
 
@@ -111,30 +103,13 @@ idx=0
 
 for model_id in "${models[@]}"; do
   idx=$((idx + 1))
-
-  op_mode="$MODE"
-  if [[ "$MODE" == "auto" ]]; then
-    if [[ "$model_id" == *"embed"* ]]; then
-      op_mode="embeddings"
-    else
-      op_mode="chat"
-    fi
-  fi
-
   endpoint="/v1/chat/completions"
-  if [[ "$op_mode" == "embeddings" ]]; then
-    endpoint="/v1/embeddings"
-  fi
-
-  if [[ "$op_mode" == "chat" ]]; then
-    payload="$(jq -nc \
-      --arg model "$model_id" \
-      --arg prompt "$PROMPT_TEXT" \
-      --argjson max_tokens "$MAX_TOKENS" \
-      '{model:$model,messages:[{role:"user",content:$prompt}],max_tokens:$max_tokens}')"
-  else
-    payload="$(jq -nc --arg model "$model_id" '{model:$model,input:"health ping"}')"
-  fi
+  op_mode="chat"
+  payload="$(jq -nc \
+    --arg model "$model_id" \
+    --arg prompt "$PROMPT_TEXT" \
+    --argjson max_tokens "$MAX_TOKENS" \
+    '{model:$model,messages:[{role:"user",content:$prompt}],max_tokens:$max_tokens}')"
 
   start_ms="$(date +%s%3N)"
   raw_out=""
@@ -165,11 +140,7 @@ for model_id in "${models[@]}"; do
 
     if [[ "$http_status" == "200" ]]; then
       result="ok"
-      if [[ "$op_mode" == "chat" ]]; then
-        finish_reason="$(printf '%s' "$body" | jq -r '.choices[0].finish_reason // ""' 2>/dev/null || true)"
-      else
-        finish_reason="n/a"
-      fi
+      finish_reason="$(printf '%s' "$body" | jq -r '.choices[0].finish_reason // ""' 2>/dev/null || true)"
     else
       result="error"
       error_type="$(printf '%s' "$body" | jq -r '.error.type // ""' 2>/dev/null || true)"
@@ -221,7 +192,7 @@ done
 jq -s \
   --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
   --arg base_url "$BASE_URL" \
-  --arg mode "$MODE" \
+  --arg mode "chat" \
   '{
     generated_at: $generated_at,
     base_url: $base_url,

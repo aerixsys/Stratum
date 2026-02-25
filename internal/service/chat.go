@@ -12,15 +12,17 @@ import (
 type ChatService struct {
 	runtime      bedrock.ChatRuntime
 	models       bedrock.ModelDiscovery
+	modelPolicy  ModelPolicy
 	translateCfg bedrock.TranslateConfig
 	defaultModel string
 }
 
 // NewChatService constructs a chat service.
-func NewChatService(runtime bedrock.ChatRuntime, models bedrock.ModelDiscovery, cfg bedrock.TranslateConfig, defaultModel string) *ChatService {
+func NewChatService(runtime bedrock.ChatRuntime, models bedrock.ModelDiscovery, cfg bedrock.TranslateConfig, defaultModel string, modelPolicy ModelPolicy) *ChatService {
 	return &ChatService{
 		runtime:      runtime,
 		models:       models,
+		modelPolicy:  modelPolicy,
 		translateCfg: cfg,
 		defaultModel: strings.TrimSpace(defaultModel),
 	}
@@ -63,6 +65,9 @@ func (s *ChatService) buildInput(ctx context.Context, req *schema.ChatRequest) (
 			return nil, badRequest("model is required", nil)
 		}
 		normalized.Model = s.defaultModel
+	}
+	if s.modelPolicy != nil && s.modelPolicy.IsBlocked(normalized.Model) {
+		return nil, badRequest("model "+normalized.Model+" is blocked by policy", nil)
 	}
 
 	if s.models != nil {

@@ -14,7 +14,7 @@ jobs:
 
       - name: Prepare smoke run
         run: |
-          if [ -z "${{ secrets.STRATUM_BASE_URL }}" ] || [ -z "${{ secrets.STRATUM_API_KEY }}" ] || [ -z "${{ secrets.STRATUM_CHAT_MODEL }}" ] || [ -z "${{ secrets.STRATUM_EMBEDDING_MODEL }}" ]; then
+          if [ -z "${{ secrets.STRATUM_BASE_URL }}" ] || [ -z "${{ secrets.STRATUM_API_KEY }}" ] || [ -z "${{ secrets.STRATUM_CHAT_MODEL }}" ]; then
             {
               echo "Stratum Smoke Report"
               echo "Generated: $(date -u +\"%Y-%m-%dT%H:%M:%SZ\")"
@@ -33,7 +33,6 @@ jobs:
             --base-url "${{ secrets.STRATUM_BASE_URL }}" \
             --api-key "${{ secrets.STRATUM_API_KEY }}" \
             --chat-model "${{ secrets.STRATUM_CHAT_MODEL }}" \
-            --embedding-model "${{ secrets.STRATUM_EMBEDDING_MODEL }}" \
             --report-path smoke-report.txt
 
       - name: Upload smoke report

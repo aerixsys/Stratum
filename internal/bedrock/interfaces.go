@@ -12,11 +12,6 @@ type ChatRuntime interface {
 	ConverseStream(ctx context.Context, input *ConverseInput) <-chan []byte
 }
 
-// EmbeddingRuntime describes embeddings operations against Bedrock.
-type EmbeddingRuntime interface {
-	Embed(ctx context.Context, req *schema.EmbeddingRequest) (*schema.EmbeddingResponse, error)
-}
-
 // ModelDiscovery describes model listing and lookup operations.
 type ModelDiscovery interface {
 	GetModels(ctx context.Context) ([]schema.Model, error)

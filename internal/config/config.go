@@ -20,7 +20,6 @@ type Config struct {
 	EnableAppInferenceProfile bool
 	EnablePromptCaching       bool
 	DefaultModel              string
-	DefaultEmbeddingModel     string
 	MaxRequestBodyBytes       int64
 	RateLimitRPM              int
 	RateLimitBurst            int
@@ -42,8 +41,7 @@ func Load() (*Config, error) {
 		EnableCrossRegion:         envBool("ENABLE_CROSS_REGION_INFERENCE", true),
 		EnableAppInferenceProfile: envBool("ENABLE_APP_INFERENCE_PROFILES", false),
 		EnablePromptCaching:       envBool("ENABLE_PROMPT_CACHING", false),
-		DefaultModel:              envOr("DEFAULT_MODEL", "anthropic.claude-3-sonnet-20240229-v1:0"),
-		DefaultEmbeddingModel:     envOr("DEFAULT_EMBEDDING_MODEL", "cohere.embed-multilingual-v3"),
+		DefaultModel:              envOr("DEFAULT_MODEL", "amazon.nova-micro-v1:0"),
 		MaxRequestBodyBytes:       int64(envInt("MAX_REQUEST_BODY_BYTES", 10*1024*1024)),
 		RateLimitRPM:              envInt("RATE_LIMIT_RPM", 120),
 		RateLimitBurst:            envInt("RATE_LIMIT_BURST", 20),

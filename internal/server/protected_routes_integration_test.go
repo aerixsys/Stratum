@@ -45,20 +45,6 @@ func (integrationChatRuntime) ConverseStream(ctx context.Context, input *bedrock
 	return ch
 }
 
-type integrationEmbeddingRuntime struct{}
-
-func (integrationEmbeddingRuntime) Embed(ctx context.Context, req *schema.EmbeddingRequest) (*schema.EmbeddingResponse, error) {
-	return &schema.EmbeddingResponse{
-		Object: "list",
-		Data: []schema.EmbeddingData{{
-			Object:    "embedding",
-			Embedding: []float64{0.1, 0.2},
-			Index:     0,
-		}},
-		Model: req.Model,
-	}, nil
-}
-
 type integrationModelDiscovery struct {
 	models map[string]schema.Model
 }
@@ -79,12 +65,33 @@ func (m *integrationModelDiscovery) FindModel(ctx context.Context, modelID strin
 	return &model, nil
 }
 
+type integrationModelPolicy struct {
+	blocked map[string]bool
+}
+
+func (p *integrationModelPolicy) IsBlocked(modelID string) bool {
+	if p == nil {
+		return false
+	}
+	return p.blocked[strings.TrimSpace(modelID)]
+}
+
 func buildProtectedTestRouter(cfg *config.Config) *gin.Engine {
+	return buildProtectedTestRouterWithPolicy(cfg, nil)
+}
+
+func buildProtectedTestRouterWithPolicy(cfg *config.Config, modelPolicy service.ModelPolicy) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 
 	modelsDiscovery := &integrationModelDiscovery{models: map[string]schema.Model{
 		"amazon.nova-micro-v1:0": {
 			ID:      "amazon.nova-micro-v1:0",
+			Object:  "model",
+			Created: 1700000000,
+			OwnedBy: "bedrock",
+		},
+		"anthropic.claude-3-sonnet-20240229-v1:0": {
+			ID:      "anthropic.claude-3-sonnet-20240229-v1:0",
 			Object:  "model",
 			Created: 1700000000,
 			OwnedBy: "bedrock",
@@ -96,12 +103,9 @@ func buildProtectedTestRouter(cfg *config.Config) *gin.Engine {
 		modelsDiscovery,
 		bedrock.TranslateConfig{},
 		"",
+		modelPolicy,
 	))
-	modelsHandler := handler.NewModelsHandler(service.NewModelsService(modelsDiscovery))
-	embeddingsHandler := handler.NewEmbeddingsHandler(service.NewEmbeddingsService(
-		integrationEmbeddingRuntime{},
-		"cohere.embed-multilingual-v3",
-	))
+	modelsHandler := handler.NewModelsHandler(service.NewModelsService(modelsDiscovery, modelPolicy))
 
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -117,7 +121,6 @@ func buildProtectedTestRouter(cfg *config.Config) *gin.Engine {
 		v1.GET("/models", modelsHandler.Handle)
 		v1.GET("/models/:id", modelsHandler.HandleGet)
 		v1.POST("/chat/completions", chatHandler.Handle)
-		v1.POST("/embeddings", embeddingsHandler.Handle)
 	}
 
 	apiV1 := router.Group("/api/v1")
@@ -126,7 +129,6 @@ func buildProtectedTestRouter(cfg *config.Config) *gin.Engine {
 		apiV1.GET("/models", modelsHandler.Handle)
 		apiV1.GET("/models/:id", modelsHandler.HandleGet)
 		apiV1.POST("/chat/completions", chatHandler.Handle)
-		apiV1.POST("/embeddings", embeddingsHandler.Handle)
 	}
 
 	return router
@@ -318,6 +320,83 @@ func TestProtectedRoutes_RequestIDPropagationAndErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestProtectedRoutes_ModelPolicyBlocksAcrossEndpoints(t *testing.T) {
+	cfg := &config.Config{
+		APIKey:              "test-key",
+		MaxRequestBodyBytes: 1024 * 1024,
+		RateLimitRPM:        1000,
+		RateLimitBurst:      1000,
+		AllowAnyOrigin:      true,
+		AllowedOrigins:      []string{"*"},
+	}
+	policy := &integrationModelPolicy{
+		blocked: map[string]bool{
+			"anthropic.claude-3-sonnet-20240229-v1:0": true,
+		},
+	}
+	router := buildProtectedTestRouterWithPolicy(cfg, policy)
+
+	assertModelMissingFromList := func(t *testing.T, path string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "203.0.113.20:4444"
+		req.Header.Set("Authorization", "Bearer test-key")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		var payload struct {
+			Data []schema.Model `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("expected JSON body, got err=%v body=%s", err, rr.Body.String())
+		}
+		for _, model := range payload.Data {
+			if model.ID == "anthropic.claude-3-sonnet-20240229-v1:0" {
+				t.Fatalf("blocked model unexpectedly exposed in %s response", path)
+			}
+		}
+	}
+
+	assertModelMissingFromList(t, "/v1/models")
+	assertModelMissingFromList(t, "/api/v1/models")
+
+	for _, path := range []string{
+		"/v1/models/anthropic.claude-3-sonnet-20240229-v1:0",
+		"/api/v1/models/anthropic.claude-3-sonnet-20240229-v1:0",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "203.0.113.21:4444"
+		req.Header.Set("Authorization", "Bearer test-key")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for blocked model get %s, got %d body=%s", path, rr.Code, rr.Body.String())
+		}
+		assertErrorType(t, rr.Body.Bytes(), "not_found_error")
+	}
+
+	for _, path := range []string{"/v1/chat/completions", "/api/v1/chat/completions"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(
+			`{"model":"anthropic.claude-3-sonnet-20240229-v1:0","messages":[{"role":"user","content":"hello"}]}`,
+		))
+		req.RemoteAddr = "203.0.113.22:4444"
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for blocked chat model %s, got %d body=%s", path, rr.Code, rr.Body.String())
+		}
+		assertErrorType(t, rr.Body.Bytes(), "invalid_request_error")
+		if !strings.Contains(strings.ToLower(rr.Body.String()), "blocked by policy") {
+			t.Fatalf("expected blocked-by-policy message for %s, got %s", path, rr.Body.String())
+		}
+	}
+
+}
+
 func assertErrorType(t *testing.T, body []byte, want string) {
 	t.Helper()
 	var parsed map[string]interface{}
@@ -335,5 +414,5 @@ func assertErrorType(t *testing.T, body []byte, want string) {
 }
 
 var _ bedrock.ChatRuntime = integrationChatRuntime{}
-var _ bedrock.EmbeddingRuntime = integrationEmbeddingRuntime{}
 var _ bedrock.ModelDiscovery = (*integrationModelDiscovery)(nil)
+var _ service.ModelPolicy = (*integrationModelPolicy)(nil)

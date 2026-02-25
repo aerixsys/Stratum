@@ -8,7 +8,6 @@ Use `scripts/smoke_bedrock.sh` for repeatable compatibility checks.
 - Chat streaming SSE + `[DONE]`
 - Tool-call request path
 - Prompt caching (`5m` and optional `1h` when model supports)
-- Embeddings
 - Error mapping (`unsupported model` -> `invalid_request_error`)
 
 ## Optional scenarios (run when model/profile inputs are provided)
@@ -25,8 +24,7 @@ Use `scripts/smoke_bedrock.sh` for repeatable compatibility checks.
 ./scripts/smoke_bedrock.sh \
   --base-url http://127.0.0.1:8000 \
   --api-key '<API_KEY>' \
-  --chat-model 'anthropic.claude-sonnet-4-5-20250929-v1:0' \
-  --embedding-model 'cohere.embed-multilingual-v3' \
+  --chat-model 'amazon.nova-micro-v1:0' \
   --report-path smoke-report.txt
 ```
 

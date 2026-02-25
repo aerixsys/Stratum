@@ -20,6 +20,8 @@ model-test-report-*.csv
 *.log
 tmp/
 *.tmp
+reports/*
+!reports/.gitkeep
 
 # OS / editor files
 .DS_Store

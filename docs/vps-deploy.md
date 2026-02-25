@@ -1,6 +1,7 @@
-# VPS Deployment (Docker Compose Only)
+# VPS Deployment (Compose Production Path)
 
-This release targets self-hosted VPS deployment with Docker Compose.
+This release targets self-hosted VPS deployment with Docker Compose for production.
+For local development with a direct binary run, see the quick start in `README.md`.
 
 ## 1) Prerequisites
 
@@ -17,6 +18,13 @@ cp .env.example .env
 # edit .env with production values
 chmod 600 .env
 ```
+
+Model policy is required and tracked in git:
+
+- `config/model-policy.yaml`
+- Edit this file to update blocked model patterns
+- Restart Stratum after changes (`docker compose restart`)
+- Verify with `GET /v1/models`
 
 Required at minimum:
 

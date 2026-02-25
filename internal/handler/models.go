@@ -9,7 +9,7 @@ import (
 	"github.com/stratum/gateway/internal/service"
 )
 
-// ModelsHandler handles GET /v1/models.
+// ModelsHandler handles GET /v1/models and /api/v1/models.
 type ModelsHandler struct {
 	svc *service.ModelsService
 }

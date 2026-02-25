@@ -63,7 +63,7 @@ func TestChatService_DefaultModelFallback(t *testing.T) {
 			"anthropic.claude-3-sonnet": {ID: "anthropic.claude-3-sonnet"},
 		},
 	}
-	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "anthropic.claude-3-sonnet")
+	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "anthropic.claude-3-sonnet", nil)
 
 	req := &schema.ChatRequest{
 		Messages: []schema.Message{
@@ -85,7 +85,7 @@ func TestChatService_DefaultModelFallback(t *testing.T) {
 func TestChatService_RejectUnsupportedModel(t *testing.T) {
 	rt := &fakeChatRuntime{}
 	models := &fakeModels{models: map[string]schema.Model{}}
-	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "")
+	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil)
 
 	req := &schema.ChatRequest{
 		Model: "missing-model",
@@ -113,7 +113,7 @@ func TestChatService_TranslatesStreamIncludeUsage(t *testing.T) {
 			"anthropic.claude-3-sonnet": {ID: "anthropic.claude-3-sonnet"},
 		},
 	}
-	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "")
+	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil)
 	req := &schema.ChatRequest{
 		Model: "anthropic.claude-3-sonnet",
 		Messages: []schema.Message{
@@ -144,7 +144,7 @@ func TestChatService_TranslatesStreamIncludeUsage(t *testing.T) {
 }
 
 func TestChatService_NilRequest(t *testing.T) {
-	svc := NewChatService(&fakeChatRuntime{}, nil, bedrock.TranslateConfig{}, "")
+	svc := NewChatService(&fakeChatRuntime{}, nil, bedrock.TranslateConfig{}, "", nil)
 	_, err := svc.Converse(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error")
@@ -156,7 +156,7 @@ func TestChatService_NilRequest(t *testing.T) {
 }
 
 func TestChatService_ModelRequiredWithoutFallback(t *testing.T) {
-	svc := NewChatService(&fakeChatRuntime{}, nil, bedrock.TranslateConfig{}, "")
+	svc := NewChatService(&fakeChatRuntime{}, nil, bedrock.TranslateConfig{}, "", nil)
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
 		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
 	})
@@ -170,7 +170,7 @@ func TestChatService_ModelRequiredWithoutFallback(t *testing.T) {
 }
 
 func TestChatService_ModelLookupError(t *testing.T) {
-	svc := NewChatService(&fakeChatRuntime{}, &fakeModels{err: errors.New("lookup failed")}, bedrock.TranslateConfig{}, "")
+	svc := NewChatService(&fakeChatRuntime{}, &fakeModels{err: errors.New("lookup failed")}, bedrock.TranslateConfig{}, "", nil)
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
 		Model:    "m1",
 		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
@@ -186,7 +186,7 @@ func TestChatService_ModelLookupError(t *testing.T) {
 
 func TestChatService_TranslateError(t *testing.T) {
 	models := &fakeModels{models: map[string]schema.Model{"m1": {ID: "m1"}}}
-	svc := NewChatService(&fakeChatRuntime{}, models, bedrock.TranslateConfig{}, "")
+	svc := NewChatService(&fakeChatRuntime{}, models, bedrock.TranslateConfig{}, "", nil)
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
 		Model:    "m1",
 		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
@@ -206,7 +206,7 @@ func TestChatService_TranslateError(t *testing.T) {
 func TestChatService_RuntimeErrorPassThrough(t *testing.T) {
 	rt := &fakeChatRuntime{err: errors.New("upstream failed")}
 	models := &fakeModels{models: map[string]schema.Model{"m1": {ID: "m1"}}}
-	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "")
+	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil)
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
 		Model:    "m1",
 		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
@@ -214,6 +214,44 @@ func TestChatService_RuntimeErrorPassThrough(t *testing.T) {
 	if err == nil || err.Error() != "upstream failed" {
 		t.Fatalf("expected runtime error passthrough, got %v", err)
 	}
+}
+
+func TestChatService_BlockedModel(t *testing.T) {
+	rt := &fakeChatRuntime{}
+	models := &fakeModels{
+		models: map[string]schema.Model{
+			"anthropic.claude-3-sonnet": {ID: "anthropic.claude-3-sonnet"},
+		},
+	}
+	p := &testModelPolicy{
+		blocked: map[string]bool{
+			"anthropic.claude-3-sonnet": true,
+		},
+	}
+	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "", p)
+
+	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
+		Model:    "anthropic.claude-3-sonnet",
+		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
+	})
+	if err == nil {
+		t.Fatal("expected blocked model error")
+	}
+	var svcErr *Error
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+		t.Fatalf("expected bad request service error, got %v", err)
+	}
+	if svcErr.Message != "model anthropic.claude-3-sonnet is blocked by policy" {
+		t.Fatalf("unexpected error message: %q", svcErr.Message)
+	}
+}
+
+type testModelPolicy struct {
+	blocked map[string]bool
+}
+
+func (p *testModelPolicy) IsBlocked(modelID string) bool {
+	return p.blocked[modelID]
 }
 
 func float32Ptr(v float32) *float32 { return &v }

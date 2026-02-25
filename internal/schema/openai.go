@@ -299,45 +299,6 @@ type CompletionTokensDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
-// -- Embeddings --
-
-type EmbeddingRequest struct {
-	Model          string          `json:"model"`
-	Input          json.RawMessage `json:"input"` // string or []string
-	EncodingFormat string          `json:"encoding_format,omitempty"`
-}
-
-// InputStrings extracts the input as a string slice.
-func (r *EmbeddingRequest) InputStrings() []string {
-	var s string
-	if err := json.Unmarshal(r.Input, &s); err == nil {
-		return []string{s}
-	}
-	var arr []string
-	if err := json.Unmarshal(r.Input, &arr); err == nil {
-		return arr
-	}
-	return nil
-}
-
-type EmbeddingResponse struct {
-	Object string          `json:"object"`
-	Data   []EmbeddingData `json:"data"`
-	Model  string          `json:"model"`
-	Usage  *EmbeddingUsage `json:"usage,omitempty"`
-}
-
-type EmbeddingData struct {
-	Object    string    `json:"object"`
-	Embedding []float64 `json:"embedding"`
-	Index     int       `json:"index"`
-}
-
-type EmbeddingUsage struct {
-	PromptTokens int `json:"prompt_tokens"`
-	TotalTokens  int `json:"total_tokens"`
-}
-
 // -- Models --
 
 type ModelList struct {

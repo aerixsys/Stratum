@@ -38,10 +38,6 @@ func (s *stubRuntimeAPI) ConverseStream(ctx context.Context, params *awssdkbedro
 	return nil, errors.New("not implemented")
 }
 
-func (s *stubRuntimeAPI) InvokeModel(ctx context.Context, params *awssdkbedrockruntime.InvokeModelInput, optFns ...func(*awssdkbedrockruntime.Options)) (*awssdkbedrockruntime.InvokeModelOutput, error) {
-	return &awssdkbedrockruntime.InvokeModelOutput{Body: []byte(`{}`)}, nil
-}
-
 func TestRun_GracefulShutdown(t *testing.T) {
 	oldNewClient := newBedrockClient
 	oldNotify := notifyContext
@@ -111,7 +107,6 @@ func TestRun_BedrockClientError(t *testing.T) {
 var _ interface {
 	Converse(ctx context.Context, params *awssdkbedrockruntime.ConverseInput, optFns ...func(*awssdkbedrockruntime.Options)) (*awssdkbedrockruntime.ConverseOutput, error)
 	ConverseStream(ctx context.Context, params *awssdkbedrockruntime.ConverseStreamInput, optFns ...func(*awssdkbedrockruntime.Options)) (*awssdkbedrockruntime.ConverseStreamOutput, error)
-	InvokeModel(ctx context.Context, params *awssdkbedrockruntime.InvokeModelInput, optFns ...func(*awssdkbedrockruntime.Options)) (*awssdkbedrockruntime.InvokeModelOutput, error)
 } = (*stubRuntimeAPI)(nil)
 
 var _ interface {

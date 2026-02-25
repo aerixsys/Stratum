@@ -13,6 +13,7 @@ RUN addgroup -S stratum && adduser -S -G stratum stratum \
 
 WORKDIR /app
 COPY --from=builder /out/stratum /app/stratum
+COPY --from=builder /src/config /app/config
 
 USER stratum
 EXPOSE 8000

@@ -42,17 +42,6 @@ func (f *fakeChatRuntime) ConverseStream(ctx context.Context, input *bedrock.Con
 	return ch
 }
 
-type fakeEmbeddingRuntime struct {
-	lastReq *schema.EmbeddingRequest
-	resp    *schema.EmbeddingResponse
-	err     error
-}
-
-func (f *fakeEmbeddingRuntime) Embed(ctx context.Context, req *schema.EmbeddingRequest) (*schema.EmbeddingResponse, error) {
-	f.lastReq = req
-	return f.resp, f.err
-}
-
 type fakeModelDiscovery struct {
 	models map[string]schema.Model
 	err    error
@@ -108,7 +97,7 @@ func TestChatHandler_SyncSuccess(t *testing.T) {
 			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
 		},
 	}
-	h := NewChatHandler(service.NewChatService(rt, models, bedrock.TranslateConfig{}, ""))
+	h := NewChatHandler(service.NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil))
 
 	r := gin.New()
 	r.POST("/v1/chat/completions", h.Handle)
@@ -143,7 +132,7 @@ func TestChatHandler_StreamSuccess(t *testing.T) {
 			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
 		},
 	}
-	h := NewChatHandler(service.NewChatService(rt, models, bedrock.TranslateConfig{}, ""))
+	h := NewChatHandler(service.NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil))
 
 	r := gin.New()
 	r.POST("/v1/chat/completions", h.Handle)
@@ -172,7 +161,7 @@ func TestChatHandler_BodyLimit(t *testing.T) {
 			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
 		},
 	}
-	h := NewChatHandler(service.NewChatService(rt, models, bedrock.TranslateConfig{}, ""))
+	h := NewChatHandler(service.NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil))
 
 	r := gin.New()
 	r.Use(middleware.BodyLimit(64))
@@ -188,54 +177,6 @@ func TestChatHandler_BodyLimit(t *testing.T) {
 	}
 }
 
-func TestEmbeddingsHandler_DefaultModelFallback(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	rt := &fakeEmbeddingRuntime{
-		resp: &schema.EmbeddingResponse{
-			Object: "list",
-			Data: []schema.EmbeddingData{
-				{Object: "embedding", Embedding: []float64{0.1, 0.2}, Index: 0},
-			},
-			Model: "cohere.embed-multilingual-v3",
-		},
-	}
-	h := NewEmbeddingsHandler(service.NewEmbeddingsService(rt, "cohere.embed-multilingual-v3"))
-
-	r := gin.New()
-	r.POST("/v1/embeddings", h.Handle)
-
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, newJSONRequest(http.MethodPost, "/v1/embeddings", `{"input":"hello"}`))
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
-	}
-	if rt.lastReq == nil || rt.lastReq.Model != "cohere.embed-multilingual-v3" {
-		t.Fatalf("expected default embedding model to be applied")
-	}
-}
-
-func TestEmbeddingsHandler_BodyLimit(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	rt := &fakeEmbeddingRuntime{resp: &schema.EmbeddingResponse{Object: "list"}}
-	h := NewEmbeddingsHandler(service.NewEmbeddingsService(rt, "cohere.embed-multilingual-v3"))
-
-	r := gin.New()
-	r.Use(middleware.BodyLimit(64))
-	r.POST("/v1/embeddings", h.Handle)
-
-	large := strings.Repeat("a", 512)
-	body := fmt.Sprintf(`{"model":"cohere.embed-multilingual-v3","input":"%s"}`, large)
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, newJSONRequest(http.MethodPost, "/v1/embeddings", body))
-
-	if rr.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 413, got %d body=%s", rr.Code, rr.Body.String())
-	}
-}
-
 func TestModelsHandler_List(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -244,7 +185,7 @@ func TestModelsHandler_List(t *testing.T) {
 			"m1": {ID: "m1", Object: "model"},
 		},
 	}
-	h := NewModelsHandler(service.NewModelsService(models))
+	h := NewModelsHandler(service.NewModelsService(models, nil))
 
 	r := gin.New()
 	r.GET("/v1/models", h.Handle)
@@ -262,7 +203,7 @@ func TestModelsHandler_GetNotFound(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	models := &fakeModelDiscovery{models: map[string]schema.Model{}}
-	h := NewModelsHandler(service.NewModelsService(models))
+	h := NewModelsHandler(service.NewModelsService(models, nil))
 
 	r := gin.New()
 	r.GET("/v1/models/:id", h.HandleGet)
@@ -299,5 +240,4 @@ func TestHealthAndReadyHandlers(t *testing.T) {
 func strPtr(v string) *string { return &v }
 
 var _ bedrock.ChatRuntime = (*fakeChatRuntime)(nil)
-var _ bedrock.EmbeddingRuntime = (*fakeEmbeddingRuntime)(nil)
 var _ bedrock.ModelDiscovery = (*fakeModelDiscovery)(nil)

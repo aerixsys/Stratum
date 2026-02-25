@@ -16,6 +16,7 @@ import (
 	"github.com/stratum/gateway/internal/config"
 	"github.com/stratum/gateway/internal/handler"
 	"github.com/stratum/gateway/internal/middleware"
+	"github.com/stratum/gateway/internal/policy"
 	"github.com/stratum/gateway/internal/service"
 )
 
@@ -26,6 +27,14 @@ var (
 
 // Run starts the Stratum server.
 func Run(cfg *config.Config) error {
+	modelPolicy, err := policy.LoadDefaultModelPolicy()
+	if err != nil {
+		return fmt.Errorf("model policy: %w", err)
+	}
+	if modelPolicy.IsBlocked(cfg.DefaultModel) {
+		return fmt.Errorf("DEFAULT_MODEL %q is blocked by model policy (%s)", cfg.DefaultModel, modelPolicy.FilePath())
+	}
+
 	// Create Bedrock client
 	client, err := newBedrockClient(cfg)
 	if err != nil {
@@ -34,9 +43,10 @@ func Run(cfg *config.Config) error {
 
 	// Model cache with 5 min TTL
 	modelCache := bedrock.NewModelCache(client, 5*time.Minute)
+	modelDiscovery := bedrock.NewPolicyFilteredDiscovery(modelCache, modelPolicy)
 
 	// Pre-load models
-	if _, err := modelCache.GetModels(context.Background()); err != nil {
+	if _, err := modelDiscovery.GetModels(context.Background()); err != nil {
 		log.Printf("[warn] Initial model discovery failed: %v", err)
 	}
 
@@ -49,14 +59,12 @@ func Run(cfg *config.Config) error {
 	}
 
 	// Create services
-	modelsService := service.NewModelsService(modelCache)
-	chatService := service.NewChatService(client, modelCache, translateCfg, cfg.DefaultModel)
-	embeddingsService := service.NewEmbeddingsService(client, cfg.DefaultEmbeddingModel)
+	modelsService := service.NewModelsService(modelDiscovery, modelPolicy)
+	chatService := service.NewChatService(client, modelDiscovery, translateCfg, cfg.DefaultModel, modelPolicy)
 
 	// Create handlers
 	chatHandler := handler.NewChatHandler(chatService)
 	modelsHandler := handler.NewModelsHandler(modelsService)
-	embeddingsHandler := handler.NewEmbeddingsHandler(embeddingsService)
 
 	// Gin setup
 	if cfg.LogLevel != "debug" {
@@ -90,7 +98,6 @@ func Run(cfg *config.Config) error {
 		v1.GET("/models", modelsHandler.Handle)
 		v1.GET("/models/:id", modelsHandler.HandleGet)
 		v1.POST("/chat/completions", chatHandler.Handle)
-		v1.POST("/embeddings", embeddingsHandler.Handle)
 	}
 
 	// Also support /api/v1 prefix for backward compat
@@ -100,7 +107,6 @@ func Run(cfg *config.Config) error {
 		apiV1.GET("/models", modelsHandler.Handle)
 		apiV1.GET("/models/:id", modelsHandler.HandleGet)
 		apiV1.POST("/chat/completions", chatHandler.Handle)
-		apiV1.POST("/embeddings", embeddingsHandler.Handle)
 	}
 
 	// HTTP server
