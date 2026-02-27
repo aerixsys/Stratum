@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -31,9 +30,6 @@ func Run(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("model policy: %w", err)
 	}
-	if modelPolicy.IsBlocked(cfg.DefaultModel) {
-		return fmt.Errorf("DEFAULT_MODEL %q is blocked by model policy (%s)", cfg.DefaultModel, modelPolicy.FilePath())
-	}
 
 	// Create Bedrock client
 	client, err := newBedrockClient(cfg)
@@ -50,17 +46,9 @@ func Run(cfg *config.Config) error {
 		log.Printf("[warn] Initial model discovery failed: %v", err)
 	}
 
-	// Translate config
-	translateCfg := bedrock.TranslateConfig{
-		EnablePromptCaching:    cfg.EnablePromptCaching,
-		AllowPrivateImageFetch: cfg.AllowPrivateImageFetch,
-		ImageMaxBytes:          cfg.ImageMaxBytes,
-		ImageFetchTimeout:      time.Duration(cfg.ImageFetchTimeoutSeconds) * time.Second,
-	}
-
 	// Create services
 	modelsService := service.NewModelsService(modelDiscovery, modelPolicy)
-	chatService := service.NewChatService(client, modelDiscovery, translateCfg, cfg.DefaultModel, modelPolicy)
+	chatService := service.NewChatService(client, modelDiscovery, modelPolicy)
 
 	// Create handlers
 	chatHandler := handler.NewChatHandler(chatService)
@@ -74,10 +62,8 @@ func Run(cfg *config.Config) error {
 	router.Use(gin.Recovery())
 	router.Use(middleware.RequestID())
 	router.Use(requestLogger(cfg.LogLevel))
-	router.Use(corsMiddleware(cfg))
+	router.Use(corsMiddleware())
 	router.Use(middleware.BodyLimit(cfg.MaxRequestBodyBytes))
-	rateLimiter := middleware.NewRateLimiter(cfg.RateLimitRPM, cfg.RateLimitBurst)
-	router.Use(rateLimiter.Middleware())
 
 	metrics := newMetricsCollector()
 	if cfg.EnableMetrics {
@@ -98,15 +84,6 @@ func Run(cfg *config.Config) error {
 		v1.GET("/models", modelsHandler.Handle)
 		v1.GET("/models/:id", modelsHandler.HandleGet)
 		v1.POST("/chat/completions", chatHandler.Handle)
-	}
-
-	// Also support /api/v1 prefix for backward compat
-	apiV1 := router.Group("/api/v1")
-	apiV1.Use(middleware.APIKeyAuth(cfg.APIKey))
-	{
-		apiV1.GET("/models", modelsHandler.Handle)
-		apiV1.GET("/models/:id", modelsHandler.HandleGet)
-		apiV1.POST("/chat/completions", chatHandler.Handle)
 	}
 
 	// HTTP server
@@ -150,30 +127,15 @@ func printBanner(cfg *config.Config) {
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Printf("  Port:           %s\n", cfg.Port)
 	fmt.Printf("  Region:         %s\n", cfg.AWSRegion)
-	fmt.Printf("  Cross-Region:   %v\n", cfg.EnableCrossRegion)
-	fmt.Printf("  Prompt Cache:   %v\n", cfg.EnablePromptCaching)
 	fmt.Printf("  Log Level:      %s\n", cfg.LogLevel)
 	fmt.Printf("  API:            http://localhost:%s/v1\n", cfg.Port)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
 }
 
-func corsMiddleware(cfg *config.Config) gin.HandlerFunc {
-	allowed := make(map[string]struct{}, len(cfg.AllowedOrigins))
-	for _, o := range cfg.AllowedOrigins {
-		allowed[strings.TrimSpace(o)] = struct{}{}
-	}
-
+func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		origin := c.GetHeader("Origin")
-		if cfg.AllowAnyOrigin {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		} else if origin != "" {
-			if _, ok := allowed[origin]; ok {
-				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-				c.Writer.Header().Set("Vary", "Origin")
-			}
-		}
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		c.Writer.Header().Set("Access-Control-Max-Age", "86400")

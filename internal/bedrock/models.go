@@ -68,9 +68,8 @@ func (mc *ModelCache) discoverModels(ctx context.Context) ([]schema.Model, error
 	now := time.Now().Unix()
 	seen := make(map[string]bool)
 	var models []schema.Model
-	foundationsForProfiles := make(map[string]bool)
 
-	// 1. List foundation models (on-demand, text-output capable)
+	// List foundation models (on-demand, text-output capable).
 	fmOut, err := mc.client.Bedrock.ListFoundationModels(ctx, &bedrock.ListFoundationModelsInput{})
 	if err != nil {
 		return nil, fmt.Errorf("ListFoundationModels: %w", err)
@@ -81,8 +80,8 @@ func (mc *ModelCache) discoverModels(ctx context.Context) ([]schema.Model, error
 			continue
 		}
 
-		foundationsForProfiles[id] = supportsTextOutput(fm) && !hasDisallowedOutputModalities(fm)
-		if !supportsOnDemand(fm) || !foundationsForProfiles[id] {
+		eligible := supportsTextOutput(fm) && !hasDisallowedOutputModalities(fm)
+		if !supportsOnDemand(fm) || !eligible {
 			continue
 		}
 
@@ -95,62 +94,7 @@ func (mc *ModelCache) discoverModels(ctx context.Context) ([]schema.Model, error
 		})
 	}
 
-	// 2. List inference profiles (cross-region + app profiles)
-	if mc.client.Config.EnableCrossRegion || mc.client.Config.EnableAppInferenceProfile {
-		profiles, err := mc.listAllInferenceProfiles(ctx)
-		if err != nil {
-			log.Printf("[models] Warning: ListInferenceProfiles failed: %v", err)
-		} else {
-			for _, profile := range profiles {
-				id := aws.ToString(profile.InferenceProfileId)
-				if id == "" || seen[id] {
-					continue
-				}
-				isSystem := profile.Type == bedrocktypes.InferenceProfileTypeSystemDefined
-				isApp := profile.Type == bedrocktypes.InferenceProfileTypeApplication
-
-				if isSystem && !mc.client.Config.EnableCrossRegion {
-					continue
-				}
-				if isApp && !mc.client.Config.EnableAppInferenceProfile {
-					continue
-				}
-				if !profileSupportsTextOnlyOutputs(profile, foundationsForProfiles) {
-					continue
-				}
-
-				seen[id] = true
-				models = append(models, schema.Model{
-					ID:      id,
-					Object:  "model",
-					Created: now,
-					OwnedBy: "bedrock",
-				})
-			}
-		}
-	}
-
 	return models, nil
-}
-
-func (mc *ModelCache) listAllInferenceProfiles(ctx context.Context) ([]bedrocktypes.InferenceProfileSummary, error) {
-	var all []bedrocktypes.InferenceProfileSummary
-	var nextToken *string
-
-	for {
-		out, err := mc.client.Bedrock.ListInferenceProfiles(ctx, &bedrock.ListInferenceProfilesInput{
-			NextToken: nextToken,
-		})
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, out.InferenceProfileSummaries...)
-		if out.NextToken == nil {
-			break
-		}
-		nextToken = out.NextToken
-	}
-	return all, nil
 }
 
 func supportsOnDemand(fm bedrocktypes.FoundationModelSummary) bool {
@@ -178,31 +122,6 @@ func hasDisallowedOutputModalities(fm bedrocktypes.FoundationModelSummary) bool 
 		}
 	}
 	return false
-}
-
-func profileSupportsTextOnlyOutputs(profile bedrocktypes.InferenceProfileSummary, foundations map[string]bool) bool {
-	if len(profile.Models) == 0 {
-		return false
-	}
-	for _, model := range profile.Models {
-		modelID := modelIDFromFoundationARN(aws.ToString(model.ModelArn))
-		if modelID == "" {
-			return false
-		}
-		if !foundations[modelID] {
-			return false
-		}
-	}
-	return true
-}
-
-func modelIDFromFoundationARN(modelARN string) string {
-	const marker = "foundation-model/"
-	idx := strings.Index(modelARN, marker)
-	if idx == -1 {
-		return ""
-	}
-	return strings.TrimSpace(modelARN[idx+len(marker):])
 }
 
 // FindModel checks if a model ID exists.

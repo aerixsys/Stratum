@@ -4,12 +4,7 @@ set -euo pipefail
 BASE_URL=""
 API_KEY=""
 CHAT_MODEL=""
-PROFILE_MODEL=""
-APP_PROFILE_MODEL=""
-REASONING_MODEL=""
 MULTIMODAL_IMAGE_URL=""
-GUARDRAIL_ID=""
-GUARDRAIL_VERSION=""
 REPORT_PATH="smoke-report.txt"
 
 usage() {
@@ -19,15 +14,10 @@ Usage: $0 --base-url URL --api-key KEY --chat-model MODEL [options]
 Required:
   --base-url URL              Gateway base URL (e.g. http://127.0.0.1:8000)
   --api-key KEY               Stratum API key
-  --chat-model MODEL          Chat model/profile ID
+  --chat-model MODEL          Chat model ID
 
 Optional:
-  --profile-model MODEL       Cross-region profile model ID
-  --app-profile-model MODEL   Application profile model ID
-  --reasoning-model MODEL     Reasoning-capable model ID
   --image-url URL             Public image URL for multimodal check
-  --guardrail-id ID           Guardrail identifier for guardrail path check
-  --guardrail-version VER     Guardrail version for guardrail path check
   --report-path PATH          Output report path (default: smoke-report.txt)
 USAGE
 }
@@ -37,12 +27,7 @@ while [[ $# -gt 0 ]]; do
     --base-url) BASE_URL="$2"; shift 2 ;;
     --api-key) API_KEY="$2"; shift 2 ;;
     --chat-model) CHAT_MODEL="$2"; shift 2 ;;
-    --profile-model) PROFILE_MODEL="$2"; shift 2 ;;
-    --app-profile-model) APP_PROFILE_MODEL="$2"; shift 2 ;;
-    --reasoning-model) REASONING_MODEL="$2"; shift 2 ;;
     --image-url) MULTIMODAL_IMAGE_URL="$2"; shift 2 ;;
-    --guardrail-id) GUARDRAIL_ID="$2"; shift 2 ;;
-    --guardrail-version) GUARDRAIL_VERSION="$2"; shift 2 ;;
     --report-path) REPORT_PATH="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1"; usage; exit 1 ;;
@@ -161,21 +146,6 @@ check_tool_call() {
   fi
 }
 
-check_reasoning() {
-  if [[ -z "$REASONING_MODEL" ]]; then
-    record_skip "reasoning" "--reasoning-model not provided"
-    return
-  fi
-  local payload
-  payload='{"model":"'"${REASONING_MODEL}"'","reasoning_effort":"medium","messages":[{"role":"user","content":"solve 17*19"}]}'
-  run_request POST /v1/chat/completions "$payload"
-  if [[ "$REQ_STATUS" == "200" ]]; then
-    record_pass "reasoning" "200"
-  else
-    record_fail "reasoning" "status=${REQ_STATUS} body=${REQ_BODY}"
-  fi
-}
-
 check_prompt_caching() {
   local payload
   payload='{"model":"'"${CHAT_MODEL}"'","messages":[{"role":"user","content":"cache me"}],"extra_body":{"prompt_caching":{"enabled":true,"ttl":"5m"}}}'
@@ -186,44 +156,13 @@ check_prompt_caching() {
     record_fail "prompt_cache_5m" "status=${REQ_STATUS} body=${REQ_BODY}"
   fi
 
-  if [[ -n "$REASONING_MODEL" ]]; then
-    payload='{"model":"'"${REASONING_MODEL}"'","messages":[{"role":"user","content":"cache me 1h"}],"extra_body":{"prompt_caching":{"enabled":true,"ttl":"1h"}}}'
-    run_request POST /v1/chat/completions "$payload"
-    if [[ "$REQ_STATUS" == "200" || "$REQ_STATUS" == "400" ]]; then
-      # 1h support is model-dependent; both valid success and explicit validation error are informative.
-      record_pass "prompt_cache_1h" "status=${REQ_STATUS}"
-    else
-      record_fail "prompt_cache_1h" "status=${REQ_STATUS} body=${REQ_BODY}"
-    fi
+  payload='{"model":"'"${CHAT_MODEL}"'","messages":[{"role":"user","content":"cache me 1h"}],"extra_body":{"prompt_caching":{"enabled":true,"ttl":"1h"}}}'
+  run_request POST /v1/chat/completions "$payload"
+  if [[ "$REQ_STATUS" == "200" || "$REQ_STATUS" == "400" ]]; then
+    # 1h support is model-dependent; both valid success and explicit validation error are informative.
+    record_pass "prompt_cache_1h" "status=${REQ_STATUS}"
   else
-    record_skip "prompt_cache_1h" "--reasoning-model not provided"
-  fi
-}
-
-check_profiles() {
-  local payload
-  if [[ -n "$PROFILE_MODEL" ]]; then
-    payload='{"model":"'"${PROFILE_MODEL}"'","messages":[{"role":"user","content":"cross region profile"}]}'
-    run_request POST /v1/chat/completions "$payload"
-    if [[ "$REQ_STATUS" == "200" ]]; then
-      record_pass "cross_region_profile" "200"
-    else
-      record_fail "cross_region_profile" "status=${REQ_STATUS} body=${REQ_BODY}"
-    fi
-  else
-    record_skip "cross_region_profile" "--profile-model not provided"
-  fi
-
-  if [[ -n "$APP_PROFILE_MODEL" ]]; then
-    payload='{"model":"'"${APP_PROFILE_MODEL}"'","messages":[{"role":"user","content":"application profile"}]}'
-    run_request POST /v1/chat/completions "$payload"
-    if [[ "$REQ_STATUS" == "200" ]]; then
-      record_pass "application_profile" "200"
-    else
-      record_fail "application_profile" "status=${REQ_STATUS} body=${REQ_BODY}"
-    fi
-  else
-    record_skip "application_profile" "--app-profile-model not provided"
+    record_fail "prompt_cache_1h" "status=${REQ_STATUS} body=${REQ_BODY}"
   fi
 }
 
@@ -245,21 +184,6 @@ check_multimodal() {
   fi
 }
 
-check_guardrail() {
-  if [[ -z "$GUARDRAIL_ID" || -z "$GUARDRAIL_VERSION" ]]; then
-    record_skip "guardrail" "--guardrail-id/--guardrail-version not provided"
-    return
-  fi
-  local payload
-  payload='{"model":"'"${CHAT_MODEL}"'","messages":[{"role":"user","content":"guardrail test"}],"extra_body":{"guardrail_config":{"guardrail_identifier":"'"${GUARDRAIL_ID}"'","guardrail_version":"'"${GUARDRAIL_VERSION}"'"}}}'
-  run_request POST /v1/chat/completions "$payload"
-  if [[ "$REQ_STATUS" == "200" || "$REQ_STATUS" == "400" ]]; then
-    record_pass "guardrail" "status=${REQ_STATUS}"
-  else
-    record_fail "guardrail" "status=${REQ_STATUS} body=${REQ_BODY}"
-  fi
-}
-
 check_error_mapping() {
   local payload
   payload='{"model":"missing-model","messages":[{"role":"user","content":"trigger unsupported"}]}'
@@ -276,11 +200,8 @@ check_models
 check_chat_sync
 check_chat_stream
 check_tool_call
-check_reasoning
 check_prompt_caching
-check_profiles
 check_multimodal
-check_guardrail
 check_error_mapping
 
 {

@@ -1,93 +1,57 @@
-# VPS Deployment (Compose Production Path)
+# VPS Deployment Runbook
 
-This release targets self-hosted VPS deployment with Docker Compose for production.
-For local development with a direct binary run, see the quick start in `README.md`.
+Production deployment of Stratum on a self-hosted VPS using Docker Compose.
 
-## 1) Prerequisites
+## Prerequisites
 
-- Linux VPS with Docker Engine + Docker Compose plugin.
-- Bedrock access configured for your AWS credentials.
-- Firewall only exposing your reverse proxy (not raw container port).
+| Requirement | Details |
+| --- | --- |
+| Linux VPS | Docker Engine and Docker Compose plugin installed |
+| AWS | Bedrock access enabled on your account |
+| Reverse proxy | Nginx, Caddy, or Traefik in front of Stratum |
+| Firewall | Only proxy ports exposed publicly |
 
-## 2) Prepare runtime config
-
-Use only existing Stratum config keys (no additional runtime env variables).
+## 1) Configure
 
 ```bash
 cp .env.example .env
-# edit .env with production values
 chmod 600 .env
 ```
 
-Model policy is required and tracked in git:
-
-- `config/model-policy.yaml`
-- Edit this file to update blocked model patterns
-- Restart Stratum after changes (`docker compose restart`)
-- Verify with `GET /v1/models`
-
-Required at minimum:
-
+Set at minimum:
 - `API_KEY`
 - `AWS_REGION`
-- AWS credentials (or instance role/attached credentials chain)
+- AWS credentials (or use an IAM role)
 
-## 3) Build and start
+The repository includes a curated default `config/model-policy.yaml`. Adjust it if
+you want to expose a broader or narrower model set.
+
+## 2) Build and Start
 
 ```bash
 docker compose build --pull
 docker compose up -d
 ```
 
-Verify health:
+## 3) Verify
 
 ```bash
 curl -sS http://127.0.0.1:8000/ready
+curl -sS http://127.0.0.1:8000/v1/models \
+  -H "Authorization: Bearer <API_KEY>"
 ```
 
-## 4) Operate
+## 4) Day-2 Operations
 
-Logs:
+| Task | Command |
+| --- | --- |
+| View logs | `docker compose logs -f --tail=200` |
+| Restart | `docker compose restart` |
+| Stop | `docker compose down` |
+| Upgrade | `git pull && docker compose build --pull && docker compose up -d` |
+| Rollback | `git checkout <tag> && docker compose build --pull && docker compose up -d` |
 
-```bash
-docker compose logs -f --tail=200
-```
-
-Restart:
-
-```bash
-docker compose restart
-```
-
-Stop:
-
-```bash
-docker compose down
-```
-
-## 5) Upgrade and rollback
-
-Upgrade:
-
-```bash
-git pull
-docker compose build --pull
-docker compose up -d
-```
-
-Rollback (to previous git tag/commit):
-
-```bash
-git checkout <previous-tag-or-commit>
-docker compose build --pull
-docker compose up -d
-```
-
-## 6) Reverse proxy guidance
-
-Bind container port to loopback only (`127.0.0.1:8000:8000`) and front it with Nginx/Caddy.
-
-Example Nginx snippet:
+## 5) Nginx Reverse Proxy
 
 ```nginx
 server {
@@ -99,15 +63,14 @@ server {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Request-ID $request_id;
     proxy_buffering off;
   }
 }
 ```
 
-## 7) Security baseline
+## Security Notes
 
-- Keep `.env` out of git.
-- Restrict `.env` permissions to owner only.
-- Rotate `API_KEY` and AWS credentials regularly (see `docs/secret-rotation.md`).
+- Keep `.env` out of git and at `0600` permissions
+- Rotate `API_KEY` and AWS credentials regularly
+- Stratum does not apply local rate limiting; enforce throttling at the edge
+- See [secret-rotation.md](secret-rotation.md)

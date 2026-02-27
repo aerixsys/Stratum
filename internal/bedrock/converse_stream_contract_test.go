@@ -140,22 +140,66 @@ func TestEmitConverseSSEStream_OrderAndSchema(t *testing.T) {
 	if got := int(usageMap["prompt_tokens"].(float64)); got != 10 {
 		t.Fatalf("unexpected prompt_tokens in usage: %d", got)
 	}
-	completionDetails, ok := usageMap["completion_tokens_details"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected completion_tokens_details in usage chunk, got %+v", usageMap)
-	}
-	if got := int(completionDetails["reasoning_tokens"].(float64)); got <= 0 {
-		t.Fatalf("expected positive reasoning_tokens estimate in stream usage, got %d", got)
-	}
-	if got := completionDetails["reasoning_tokens_estimated"]; got != true {
-		t.Fatalf("expected reasoning_tokens_estimated=true, got %+v", got)
-	}
-	if got := mapString(completionDetails, "reasoning_tokens_method"); got != reasoningTokenEstimateMethod {
-		t.Fatalf("expected reasoning_tokens_method=%q, got %q", reasoningTokenEstimateMethod, got)
+	if _, ok := usageMap["completion_tokens_details"]; ok {
+		t.Fatalf("did not expect completion_tokens_details in usage chunk: %+v", usageMap)
 	}
 
 	if string(chunks[8]) != "data: [DONE]\n\n" {
 		t.Fatalf("expected final [DONE], got %q", string(chunks[8]))
+	}
+}
+
+func TestEmitConverseSSEStream_ReasoningExcludeSkipsReasoningDeltas(t *testing.T) {
+	input := &ConverseInput{
+		ModelID:          "deepseek.v3.2",
+		IncludeUsage:     true,
+		ReasoningExclude: true,
+	}
+
+	events := make(chan brtypes.ConverseStreamOutput, 5)
+	events <- &brtypes.ConverseStreamOutputMemberContentBlockDelta{
+		Value: brtypes.ContentBlockDeltaEvent{
+			ContentBlockIndex: aws.Int32(0),
+			Delta: &brtypes.ContentBlockDeltaMemberReasoningContent{
+				Value: &brtypes.ReasoningContentBlockDeltaMemberText{Value: "thinking"},
+			},
+		},
+	}
+	events <- &brtypes.ConverseStreamOutputMemberContentBlockDelta{
+		Value: brtypes.ContentBlockDeltaEvent{
+			ContentBlockIndex: aws.Int32(0),
+			Delta: &brtypes.ContentBlockDeltaMemberReasoningContent{
+				Value: &brtypes.ReasoningContentBlockDeltaMemberSignature{Value: "sig-1"},
+			},
+		},
+	}
+	events <- &brtypes.ConverseStreamOutputMemberMetadata{
+		Value: brtypes.ConverseStreamMetadataEvent{
+			Usage: &brtypes.TokenUsage{
+				InputTokens:  aws.Int32(10),
+				OutputTokens: aws.Int32(5),
+				TotalTokens:  aws.Int32(15),
+			},
+		},
+	}
+	events <- &brtypes.ConverseStreamOutputMemberMessageStop{
+		Value: brtypes.MessageStopEvent{StopReason: brtypes.StopReasonEndTurn},
+	}
+	close(events)
+
+	chunks := collectSSEChunks(input, events, func() error { return nil })
+	if len(chunks) != 4 {
+		t.Fatalf("expected role+finish+usage+[DONE], got %d chunks", len(chunks))
+	}
+	for _, chunk := range chunks {
+		payload := string(chunk)
+		if strings.Contains(payload, "\"reasoning\"") || strings.Contains(payload, "\"reasoning_signature\"") {
+			t.Fatalf("unexpected reasoning fields in stream chunk: %s", payload)
+		}
+	}
+	usage := decodeChunkAsMap(t, chunks[2])
+	if _, ok := usage["usage"].(map[string]interface{})["completion_tokens_details"]; ok {
+		t.Fatalf("did not expect completion token details, got %+v", usage)
 	}
 }
 

@@ -95,26 +95,42 @@ func TestConvertConverseOutput_WithReasoning(t *testing.T) {
 	if *resp.Choices[0].Message.Content != "The answer is 42" {
 		t.Errorf("unexpected content: %s", *resp.Choices[0].Message.Content)
 	}
-	// Verify reasoning token estimation is populated
-	if resp.Usage.CompletionTokensDetails == nil {
-		t.Fatal("expected completion_tokens_details with reasoning_tokens")
+}
+
+func TestConvertConverseOutput_WithReasoningExclude(t *testing.T) {
+	thinkText := "Let me think about this..."
+	sig := "abc123signature"
+	out := &bedrockruntime.ConverseOutput{
+		Output: &brtypes.ConverseOutputMemberMessage{
+			Value: brtypes.Message{
+				Role: brtypes.ConversationRoleAssistant,
+				Content: []brtypes.ContentBlock{
+					&brtypes.ContentBlockMemberReasoningContent{
+						Value: &brtypes.ReasoningContentBlockMemberReasoningText{
+							Value: brtypes.ReasoningTextBlock{
+								Text:      &thinkText,
+								Signature: &sig,
+							},
+						},
+					},
+					&brtypes.ContentBlockMemberText{Value: "The answer is 42"},
+				},
+			},
+		},
+		StopReason: brtypes.StopReasonEndTurn,
+		Usage: &brtypes.TokenUsage{
+			InputTokens:  aws.Int32(20),
+			OutputTokens: aws.Int32(50),
+			TotalTokens:  aws.Int32(70),
+		},
 	}
-	if resp.Usage.CompletionTokensDetails.ReasoningTokens <= 0 {
-		t.Error("expected positive reasoning_tokens estimate")
+
+	resp := convertConverseOutputWithOptions(out, "test-model", true)
+	if resp.Choices[0].Message.Reasoning != nil {
+		t.Fatal("expected reasoning text to be excluded")
 	}
-	// reasoning="Let me think about this..." (26 chars), content="The answer is 42" (16 chars)
-	// Expected: estimateReasoningTokens(50, 26, 16)
-	reasoningText := "Let me think about this..."
-	contentText := "The answer is 42"
-	expectedEstimate := estimateReasoningTokens(50, len(reasoningText), len(contentText))
-	if resp.Usage.CompletionTokensDetails.ReasoningTokens != expectedEstimate {
-		t.Errorf("expected reasoning_tokens=%d, got %d", expectedEstimate, resp.Usage.CompletionTokensDetails.ReasoningTokens)
-	}
-	if !resp.Usage.CompletionTokensDetails.ReasoningTokensEstimated {
-		t.Error("expected reasoning_tokens_estimated=true")
-	}
-	if resp.Usage.CompletionTokensDetails.ReasoningTokensMethod != reasoningTokenEstimateMethod {
-		t.Errorf("expected reasoning_tokens_method=%q, got %q", reasoningTokenEstimateMethod, resp.Usage.CompletionTokensDetails.ReasoningTokensMethod)
+	if resp.Choices[0].Message.ReasoningSignature != nil {
+		t.Fatal("expected reasoning signature to be excluded")
 	}
 }
 
@@ -246,7 +262,6 @@ func TestConvertConverseOutput_AdditionalFields(t *testing.T) {
 func TestMergeAdditionalRequestFields(t *testing.T) {
 	input := &ConverseInput{
 		AdditionalModelRequestFields: document.NewLazyDocument(map[string]interface{}{"foo": "bar"}),
-		ThinkingConfig:               &ThinkingConfig{Enabled: true, BudgetToken: 1024},
 	}
 	doc := mergeAdditionalRequestFields(input)
 	if doc == nil {
@@ -263,40 +278,12 @@ func TestMergeAdditionalRequestFields(t *testing.T) {
 	if decoded["foo"] != "bar" {
 		t.Fatalf("expected foo=bar, got %+v", decoded)
 	}
-	if _, ok := decoded["thinking"]; !ok {
-		t.Fatalf("expected thinking key in merged document")
+	if len(decoded) != 1 {
+		t.Fatalf("expected passthrough-only fields, got %+v", decoded)
 	}
 }
 
-func TestEstimateReasoningTokens(t *testing.T) {
-	tests := []struct {
-		name         string
-		outputTokens int
-		reasoningLen int
-		contentLen   int
-		expected     int
-	}{
-		{"no reasoning", 100, 0, 500, 0},
-		{"no output tokens", 0, 500, 500, 0},
-		{"all reasoning no content", 100, 500, 0, 100},
-		{"equal split", 100, 500, 500, 50},
-		{"mostly reasoning", 100, 900, 100, 90},
-		{"mostly content", 100, 100, 900, 10},
-		{"negative output tokens", -5, 100, 100, 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := estimateReasoningTokens(tt.outputTokens, tt.reasoningLen, tt.contentLen)
-			if got != tt.expected {
-				t.Errorf("estimateReasoningTokens(%d, %d, %d) = %d, want %d",
-					tt.outputTokens, tt.reasoningLen, tt.contentLen, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestConvertConverseOutput_NoReasoningNoDetails(t *testing.T) {
-	// When there's no reasoning text, CompletionTokensDetails should be nil
+func TestConvertConverseOutput_NoReasoning(t *testing.T) {
 	out := &bedrockruntime.ConverseOutput{
 		Output: &brtypes.ConverseOutputMemberMessage{
 			Value: brtypes.Message{
@@ -315,8 +302,8 @@ func TestConvertConverseOutput_NoReasoningNoDetails(t *testing.T) {
 	}
 
 	resp := convertConverseOutput(out, "test-model")
-	if resp.Usage.CompletionTokensDetails != nil {
-		t.Error("expected nil completion_tokens_details for non-reasoning response")
+	if resp.Usage == nil {
+		t.Fatal("expected usage")
 	}
 }
 
@@ -347,7 +334,7 @@ func TestConvertConverseOutput_RedactedReasoningDoesNotEstimate(t *testing.T) {
 	if resp.Choices[0].Message.Reasoning == nil {
 		t.Fatal("expected reasoning marker text for redacted content")
 	}
-	if resp.Usage.CompletionTokensDetails != nil {
-		t.Fatalf("expected no completion_tokens_details for redacted-only reasoning, got %+v", resp.Usage.CompletionTokensDetails)
+	if resp.Usage == nil {
+		t.Fatal("expected usage")
 	}
 }

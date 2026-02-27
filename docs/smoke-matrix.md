@@ -1,24 +1,23 @@
-# Smoke Matrix
+# Smoke Testing Guide
 
-Use `scripts/smoke_bedrock.sh` for repeatable compatibility checks.
+Use `scripts/smoke_bedrock.sh` to quickly verify a running Stratum endpoint.
 
-## Required scenarios
+## Required Smoke Scenarios
 
-- Chat sync
-- Chat streaming SSE + `[DONE]`
-- Tool-call request path
-- Prompt caching (`5m` and optional `1h` when model supports)
-- Error mapping (`unsupported model` -> `invalid_request_error`)
+| Scenario | Checks |
+| --- | --- |
+| Health and readiness | `/health` and `/ready` return OK |
+| Model list | `GET /v1/models` returns models |
+| Chat sync | A response with content is returned |
+| Chat stream | SSE ends with `data: [DONE]` |
+| Tool calling | Tool-call request path succeeds |
+| Prompt caching | `5m` cache hint is accepted |
+| Bad model | Returns `invalid_request_error` |
 
-## Optional scenarios (run when model/profile inputs are provided)
+Optional:
+- multimodal image input (pass `--image-url`)
 
-- Reasoning path
-- Cross-region profile invocation
-- Application profile invocation
-- Multimodal image input
-- Guardrail-enabled requests
-
-## Command
+## Run
 
 ```bash
 ./scripts/smoke_bedrock.sh \
@@ -28,22 +27,19 @@ Use `scripts/smoke_bedrock.sh` for repeatable compatibility checks.
   --report-path smoke-report.txt
 ```
 
-The script exits non-zero on failure and writes a report with pass/fail/skip summary.
+The script exits non-zero if any required check fails and writes a pass/fail report to `smoke-report.txt`.
 
 ## Full Model Sweep
 
-To probe every model returned by `/v1/models` and capture per-model errors:
+Probe every model currently returned by `/v1/models` for availability diagnostics.
 
 ```bash
 ./scripts/test_all_models.sh \
   --base-url http://127.0.0.1:8000 \
   --api-key '<API_KEY>' \
-  --output-dir .
+  --output-dir reports
 ```
 
-This generates:
-
+Generated outputs:
 - `model-test-report-<timestamp>.json`
 - `model-test-report-<timestamp>.csv`
-
-Each row includes model id, endpoint used, HTTP status, parsed `error.type`, error message, and latency.

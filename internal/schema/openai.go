@@ -2,6 +2,8 @@ package schema
 
 import (
 	"encoding/json"
+	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -18,8 +20,58 @@ type ChatRequest struct {
 	StreamOptions   *StreamOptions  `json:"stream_options,omitempty"`
 	Tools           []Tool          `json:"tools,omitempty"`
 	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"`
+	Reasoning       *Reasoning      `json:"reasoning,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 	ExtraBody       json.RawMessage `json:"extra_body,omitempty"`
+}
+
+var allowedExtraBodyFields = map[string]struct{}{
+	"prompt_caching":                  {},
+	"additional_model_request_fields": {},
+}
+
+type Reasoning struct {
+	Exclude *bool `json:"exclude,omitempty"`
+
+	unsupportedKeys []string `json:"-"`
+}
+
+func (r *Reasoning) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	r.Exclude = nil
+	r.unsupportedKeys = r.unsupportedKeys[:0]
+
+	for k, v := range raw {
+		switch k {
+		case "exclude":
+			var exclude bool
+			if err := json.Unmarshal(v, &exclude); err != nil {
+				return fmt.Errorf("reasoning.exclude must be a boolean")
+			}
+			r.Exclude = &exclude
+		default:
+			r.unsupportedKeys = append(r.unsupportedKeys, k)
+		}
+	}
+	sort.Strings(r.unsupportedKeys)
+	return nil
+}
+
+func (r *Reasoning) HasUnsupportedControls() bool {
+	return r != nil && len(r.unsupportedKeys) > 0
+}
+
+func (r *Reasoning) UnsupportedControls() []string {
+	if r == nil || len(r.unsupportedKeys) == 0 {
+		return nil
+	}
+	out := make([]string, len(r.unsupportedKeys))
+	copy(out, r.unsupportedKeys)
+	return out
 }
 
 // StreamOptions controls streaming behavior.
@@ -49,7 +101,34 @@ func (r *ChatRequest) ParseToolChoice() string {
 	return ""
 }
 
-// ParseExtraBody extracts known extra_body fields.
+// ValidateExtraBodyCoreOnly enforces minimal extra_body surface.
+func (r *ChatRequest) ValidateExtraBodyCoreOnly() error {
+	if len(r.ExtraBody) == 0 {
+		return nil
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(r.ExtraBody, &raw); err != nil {
+		return fmt.Errorf("extra_body must be a JSON object")
+	}
+
+	var unsupported []string
+	for key := range raw {
+		if _, ok := allowedExtraBodyFields[key]; !ok {
+			unsupported = append(unsupported, key)
+		}
+	}
+	if len(unsupported) == 0 {
+		return nil
+	}
+	sort.Strings(unsupported)
+	return fmt.Errorf(
+		"unsupported extra_body fields (%s); only prompt_caching and additional_model_request_fields are supported",
+		strings.Join(unsupported, ", "),
+	)
+}
+
+// ParseExtraBody extracts supported extra_body fields.
 type ExtraBodyOptions struct {
 	PromptCaching *bool
 
@@ -58,17 +137,7 @@ type ExtraBodyOptions struct {
 	PromptCachingTools    *bool
 	PromptCachingTTL      string
 
-	GuardrailIdentifier string
-	GuardrailVersion    string
-	GuardrailTrace      string
-	GuardrailStreamMode string
-
-	RequestMetadata                   map[string]string
-	AdditionalModelRequestFields      json.RawMessage
-	AdditionalModelResponseFieldPaths []string
-
-	PerformanceLatency string
-	ServiceTier        string
+	AdditionalModelRequestFields json.RawMessage
 }
 
 func (r *ChatRequest) ParseExtraBody() ExtraBodyOptions {
@@ -119,61 +188,11 @@ func (r *ChatRequest) ParseExtraBody() ExtraBodyOptions {
 		}
 	}
 
-	if grRaw, ok := raw["guardrail_config"]; ok && len(grRaw) > 0 {
-		var m map[string]interface{}
-		if err := json.Unmarshal(grRaw, &m); err == nil {
-			opts.GuardrailIdentifier = firstString(m,
-				"guardrail_identifier", "guardrailIdentifier", "identifier")
-			opts.GuardrailVersion = firstString(m,
-				"guardrail_version", "guardrailVersion", "version")
-			opts.GuardrailTrace = strings.ToLower(firstString(m,
-				"trace", "guardrail_trace", "guardrailTrace"))
-			opts.GuardrailStreamMode = strings.ToLower(firstString(m,
-				"stream_processing_mode", "streamProcessingMode"))
-		}
-	}
-
-	if rmRaw, ok := raw["request_metadata"]; ok && len(rmRaw) > 0 {
-		_ = json.Unmarshal(rmRaw, &opts.RequestMetadata)
-	}
-
 	if amrfRaw, ok := raw["additional_model_request_fields"]; ok && len(amrfRaw) > 0 {
 		opts.AdditionalModelRequestFields = amrfRaw
 	}
-	if amrpfRaw, ok := raw["additional_model_response_field_paths"]; ok && len(amrpfRaw) > 0 {
-		_ = json.Unmarshal(amrpfRaw, &opts.AdditionalModelResponseFieldPaths)
-	}
-
-	if perfRaw, ok := raw["performance_config"]; ok && len(perfRaw) > 0 {
-		var perf struct {
-			Latency string `json:"latency"`
-		}
-		if err := json.Unmarshal(perfRaw, &perf); err == nil {
-			opts.PerformanceLatency = strings.ToLower(strings.TrimSpace(perf.Latency))
-		}
-	}
-
-	if serviceTierRaw, ok := raw["service_tier"]; ok && len(serviceTierRaw) > 0 {
-		_ = json.Unmarshal(serviceTierRaw, &opts.ServiceTier)
-		opts.ServiceTier = strings.ToLower(strings.TrimSpace(opts.ServiceTier))
-	}
 
 	return opts
-}
-
-func firstString(m map[string]interface{}, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			s, ok := v.(string)
-			if ok {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					return s
-				}
-			}
-		}
-	}
-	return ""
 }
 
 type Message struct {
@@ -282,23 +301,16 @@ type ResponseMessage struct {
 }
 
 type Usage struct {
-	PromptTokens            int                      `json:"prompt_tokens"`
-	CompletionTokens        int                      `json:"completion_tokens"`
-	TotalTokens             int                      `json:"total_tokens"`
-	PromptTokensDetails     *PromptTokenDetails      `json:"prompt_tokens_details,omitempty"`
-	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	PromptTokens        int                 `json:"prompt_tokens"`
+	CompletionTokens    int                 `json:"completion_tokens"`
+	TotalTokens         int                 `json:"total_tokens"`
+	PromptTokensDetails *PromptTokenDetails `json:"prompt_tokens_details,omitempty"`
 }
 
 type PromptTokenDetails struct {
 	CachedTokens     int `json:"cached_tokens,omitempty"`
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
-}
-
-type CompletionTokensDetails struct {
-	ReasoningTokens          int    `json:"reasoning_tokens,omitempty"`
-	ReasoningTokensEstimated bool   `json:"reasoning_tokens_estimated"`
-	ReasoningTokensMethod    string `json:"reasoning_tokens_method,omitempty"`
 }
 
 // -- Models --

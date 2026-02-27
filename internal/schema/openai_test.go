@@ -93,15 +93,10 @@ func TestChatRequest_ParseExtraBody(t *testing.T) {
 		}
 	})
 
-	t.Run("extended fields parse", func(t *testing.T) {
+	t.Run("core fields parse", func(t *testing.T) {
 		req := ChatRequest{ExtraBody: json.RawMessage(`{
 			"prompt_caching":{"enabled":true,"system":true,"messages":false,"tools":true,"ttl":"1h"},
-			"guardrail_config":{"guardrail_identifier":"gr-1","guardrail_version":"1","trace":"enabled","stream_processing_mode":"async"},
-			"request_metadata":{"tenant":"acme"},
-			"additional_model_request_fields":{"foo":"bar"},
-			"additional_model_response_field_paths":["/stop_sequence"],
-			"performance_config":{"latency":"optimized"},
-			"service_tier":"priority"
+			"additional_model_request_fields":{"foo":"bar"}
 		}`)}
 		opts := req.ParseExtraBody()
 		if opts.PromptCaching == nil || *opts.PromptCaching != true {
@@ -113,22 +108,77 @@ func TestChatRequest_ParseExtraBody(t *testing.T) {
 		if opts.PromptCachingTTL != "1h" {
 			t.Fatalf("expected ttl=1h, got %q", opts.PromptCachingTTL)
 		}
-		if opts.GuardrailIdentifier != "gr-1" || opts.GuardrailVersion != "1" {
-			t.Fatalf("unexpected guardrail config: %+v", opts)
+		var fields map[string]string
+		if err := json.Unmarshal(opts.AdditionalModelRequestFields, &fields); err != nil {
+			t.Fatalf("failed to parse additional_model_request_fields: %v", err)
 		}
-		if opts.RequestMetadata["tenant"] != "acme" {
-			t.Fatalf("expected request metadata tenant=acme")
-		}
-		if len(opts.AdditionalModelResponseFieldPaths) != 1 || opts.AdditionalModelResponseFieldPaths[0] != "/stop_sequence" {
-			t.Fatalf("unexpected additional_model_response_field_paths: %v", opts.AdditionalModelResponseFieldPaths)
-		}
-		if opts.PerformanceLatency != "optimized" {
-			t.Fatalf("expected performance latency optimized, got %q", opts.PerformanceLatency)
-		}
-		if opts.ServiceTier != "priority" {
-			t.Fatalf("expected service_tier priority, got %q", opts.ServiceTier)
+		if fields["foo"] != "bar" {
+			t.Fatalf("unexpected additional_model_request_fields: %+v", fields)
 		}
 	})
+}
+
+func TestChatRequest_ValidateExtraBodyCoreOnly(t *testing.T) {
+	t.Run("allows core fields", func(t *testing.T) {
+		req := ChatRequest{ExtraBody: json.RawMessage(`{
+			"prompt_caching":{"enabled":true},
+			"additional_model_request_fields":{"x":"y"}
+		}`)}
+		if err := req.ValidateExtraBodyCoreOnly(); err != nil {
+			t.Fatalf("unexpected validation error: %v", err)
+		}
+	})
+
+	t.Run("rejects unsupported fields", func(t *testing.T) {
+		req := ChatRequest{ExtraBody: json.RawMessage(`{
+			"guardrail_config":{"guardrail_identifier":"gr-1"},
+			"service_tier":"priority"
+		}`)}
+		err := req.ValidateExtraBodyCoreOnly()
+		if err == nil {
+			t.Fatal("expected validation error")
+		}
+		if err.Error() != "unsupported extra_body fields (guardrail_config, service_tier); only prompt_caching and additional_model_request_fields are supported" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestReasoning_Unmarshal_TracksUnsupportedControls(t *testing.T) {
+	var req ChatRequest
+	err := json.Unmarshal([]byte(`{
+		"model":"m1",
+		"messages":[{"role":"user","content":"hi"}],
+		"reasoning":{"exclude":true,"enabled":true,"effort":"high"}
+	}`), &req)
+	if err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if req.Reasoning == nil {
+		t.Fatal("expected reasoning object")
+	}
+	if req.Reasoning.Exclude == nil || !*req.Reasoning.Exclude {
+		t.Fatal("expected exclude=true")
+	}
+	if !req.Reasoning.HasUnsupportedControls() {
+		t.Fatal("expected unsupported reasoning controls to be tracked")
+	}
+	unsupported := req.Reasoning.UnsupportedControls()
+	if len(unsupported) != 2 || unsupported[0] != "effort" || unsupported[1] != "enabled" {
+		t.Fatalf("unexpected unsupported controls: %v", unsupported)
+	}
+}
+
+func TestReasoning_Unmarshal_RejectsNonBooleanExclude(t *testing.T) {
+	var req ChatRequest
+	err := json.Unmarshal([]byte(`{
+		"model":"m1",
+		"messages":[{"role":"user","content":"hi"}],
+		"reasoning":{"exclude":"yes"}
+	}`), &req)
+	if err == nil {
+		t.Fatal("expected unmarshal error for non-boolean reasoning.exclude")
+	}
 }
 
 func TestResponseMessage_JSON(t *testing.T) {

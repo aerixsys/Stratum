@@ -10,7 +10,7 @@ import (
 	"github.com/stratum/gateway/internal/service"
 )
 
-// ChatHandler handles POST /v1/chat/completions and /api/v1/chat/completions.
+// ChatHandler handles POST /v1/chat/completions.
 type ChatHandler struct {
 	svc *service.ChatService
 }

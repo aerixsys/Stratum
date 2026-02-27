@@ -1,9 +1,13 @@
-# Stratum global model policy.
-# Exclude list is optional; keep it empty to allow all models.
-# Edit this list and restart the service after changes.
+# Stratum default model policy.
+# This repository ships with a curated exclude list so the default /v1/models
+# surface stays focused on the maintained target model set.
+# Edit this file and restart the service after changes.
 version: 1
 exclude:
-  # category: Anthropic permission_error (INVALID_PAYMENT_INSTRUMENT)
+  # Excluded because they are not part of the default maintained model set
+  # or are known to fail under the current support policy.
+
+  # Anthropic models excluded from the default published set
   - "anthropic.claude-3-sonnet-20240229-v1:0"
   - "us.anthropic.claude-3-sonnet-20240229-v1:0"
   - "anthropic.claude-3-haiku-20240307-v1:0"
@@ -26,11 +30,11 @@ exclude:
   - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
   - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
-  # category: Anthropic not_found_error (retired/legacy)
+  # Retired or legacy Anthropic variants
   - "anthropic.claude-3-5-sonnet-20240620-v1:0"
   - "us.anthropic.claude-3-5-sonnet-20240620-v1:0"
 
-  # category: permission_error / INVALID_PAYMENT_INSTRUMENT (non-Anthropic)
+  # Other providers excluded from the default published set
   - "twelvelabs.pegasus-1-2-v1:0"
   - "us.twelvelabs.pegasus-1-2-v1:0"
   - "global.twelvelabs.pegasus-1-2-v1:0"
@@ -42,5 +46,15 @@ exclude:
   - "us.writer.palmyra-x4-v1:0"
   - "us.writer.palmyra-x5-v1:0"
 
-  # category: not_found_error (retired/legacy model)
+  # Retired or legacy foundation model
   - "amazon.titan-tg1-large"
+
+  # Additional models intentionally excluded to preserve the curated default set
+  - "openai.gpt-oss-safeguard-120b"
+  - "mistral.voxtral-mini-3b-2507"
+  - "mistral.magistral-small-2509"
+  - "meta.llama3-8b-instruct-v1:0"
+  - "meta.llama3-70b-instruct-v1:0"
+  - "mistral.mistral-7b-instruct-v0:2"
+  - "mistral.mixtral-8x7b-instruct-v0:1"
+  - "mistral.mistral-large-2402-v1:0"

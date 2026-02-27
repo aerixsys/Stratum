@@ -38,10 +38,7 @@ func (f *fakeRuntimeAPI) ConverseStream(ctx context.Context, params *bedrockrunt
 type fakeBedrockAPI struct {
 	foundationOut   *bedrock.ListFoundationModelsOutput
 	foundationErr   error
-	inferenceOut    *bedrock.ListInferenceProfilesOutput
-	inferenceErr    error
 	foundationCalls int
-	inferenceCalls  int
 }
 
 func (f *fakeBedrockAPI) ListFoundationModels(ctx context.Context, params *bedrock.ListFoundationModelsInput, optFns ...func(*bedrock.Options)) (*bedrock.ListFoundationModelsOutput, error) {
@@ -53,17 +50,6 @@ func (f *fakeBedrockAPI) ListFoundationModels(ctx context.Context, params *bedro
 		return &bedrock.ListFoundationModelsOutput{}, nil
 	}
 	return f.foundationOut, nil
-}
-
-func (f *fakeBedrockAPI) ListInferenceProfiles(ctx context.Context, params *bedrock.ListInferenceProfilesInput, optFns ...func(*bedrock.Options)) (*bedrock.ListInferenceProfilesOutput, error) {
-	f.inferenceCalls++
-	if f.inferenceErr != nil {
-		return nil, f.inferenceErr
-	}
-	if f.inferenceOut == nil {
-		return &bedrock.ListInferenceProfilesOutput{}, nil
-	}
-	return f.inferenceOut, nil
 }
 
 func TestClientConverse_Success(t *testing.T) {
@@ -152,62 +138,26 @@ func TestMarshalSSE(t *testing.T) {
 func TestApplyConverseFields(t *testing.T) {
 	dst := &bedrockruntime.ConverseInput{}
 	applyConverseFields(dst, &ConverseInput{
-		ThinkingConfig:                    &ThinkingConfig{Enabled: true, BudgetToken: 1024},
-		AdditionalModelRequestFields:      document.NewLazyDocument(map[string]interface{}{"foo": "bar"}),
-		AdditionalModelResponseFieldPaths: []string{"/stop_sequence"},
-		RequestMetadata:                   map[string]string{"tenant": "acme"},
-		PerformanceLatency:                "optimized",
-		ServiceTier:                       "priority",
-		GuardrailConfig: &GuardrailConfig{
-			Identifier: "gr-1",
-			Version:    "1",
-			Trace:      "enabled",
-		},
+		AdditionalModelRequestFields: document.NewLazyDocument(map[string]interface{}{"foo": "bar"}),
 	})
 
 	if dst.AdditionalModelRequestFields == nil {
 		t.Fatalf("expected additional request fields")
-	}
-	if len(dst.RequestMetadata) != 1 || dst.RequestMetadata["tenant"] != "acme" {
-		t.Fatalf("unexpected request metadata: %+v", dst.RequestMetadata)
-	}
-	if dst.PerformanceConfig == nil || dst.PerformanceConfig.Latency != brtypes.PerformanceConfigLatencyOptimized {
-		t.Fatalf("expected performance config")
-	}
-	if dst.ServiceTier == nil || dst.ServiceTier.Type != brtypes.ServiceTierTypePriority {
-		t.Fatalf("expected priority service tier")
-	}
-	if dst.GuardrailConfig == nil || aws.ToString(dst.GuardrailConfig.GuardrailIdentifier) != "gr-1" {
-		t.Fatalf("expected guardrail config")
 	}
 }
 
 func TestApplyConverseStreamFields(t *testing.T) {
 	dst := &bedrockruntime.ConverseStreamInput{}
 	applyConverseStreamFields(dst, &ConverseInput{
-		AdditionalModelRequestFields:      document.NewLazyDocument(map[string]interface{}{"foo": "bar"}),
-		AdditionalModelResponseFieldPaths: []string{"/stop_sequence"},
-		RequestMetadata:                   map[string]string{"tenant": "acme"},
-		PerformanceLatency:                "optimized",
-		ServiceTier:                       "priority",
-		GuardrailConfig: &GuardrailConfig{
-			Identifier:       "gr-1",
-			Version:          "1",
-			Trace:            "enabled",
-			StreamProcessing: "sync",
-		},
+		AdditionalModelRequestFields: document.NewLazyDocument(map[string]interface{}{"foo": "bar"}),
 	})
 
-	if dst.GuardrailConfig == nil {
-		t.Fatalf("expected stream guardrail config")
-	}
-	if dst.GuardrailConfig.StreamProcessingMode != brtypes.GuardrailStreamProcessingModeSync {
-		t.Fatalf("expected sync stream processing mode")
+	if dst.AdditionalModelRequestFields == nil {
+		t.Fatalf("expected additional request fields")
 	}
 }
 
 func TestModelCache_DiscoveryAndFind(t *testing.T) {
-	now := time.Now()
 	br := &fakeBedrockAPI{
 		foundationOut: &bedrock.ListFoundationModelsOutput{
 			ModelSummaries: []bedrocktypes.FoundationModelSummary{
@@ -228,40 +178,11 @@ func TestModelCache_DiscoveryAndFind(t *testing.T) {
 				},
 			},
 		},
-		inferenceOut: &bedrock.ListInferenceProfilesOutput{
-			InferenceProfileSummaries: []bedrocktypes.InferenceProfileSummary{
-				{
-					InferenceProfileId:   aws.String("us.profile.system"),
-					InferenceProfileArn:  aws.String("arn:aws:bedrock:us-east-1:123:inference-profile/us.profile.system"),
-					InferenceProfileName: aws.String("system"),
-					Type:                 bedrocktypes.InferenceProfileTypeSystemDefined,
-					Status:               bedrocktypes.InferenceProfileStatusActive,
-					Models: []bedrocktypes.InferenceProfileModel{
-						{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-8b-instruct-v1:0")},
-					},
-					CreatedAt: &now,
-				},
-				{
-					InferenceProfileId:   aws.String("app.profile.1"),
-					InferenceProfileArn:  aws.String("arn:aws:bedrock:us-east-1:123:inference-profile/app.profile.1"),
-					InferenceProfileName: aws.String("app"),
-					Type:                 bedrocktypes.InferenceProfileTypeApplication,
-					Status:               bedrocktypes.InferenceProfileStatusActive,
-					Models: []bedrocktypes.InferenceProfileModel{
-						{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0")},
-					},
-					CreatedAt: &now,
-				},
-			},
-		},
 	}
 
 	c := &Client{
 		Bedrock: br,
-		Config: &config.Config{
-			EnableCrossRegion:         true,
-			EnableAppInferenceProfile: true,
-		},
+		Config:  &config.Config{},
 	}
 	mc := NewModelCache(c, time.Minute)
 
@@ -269,8 +190,8 @@ func TestModelCache_DiscoveryAndFind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModels error: %v", err)
 	}
-	if len(models) != 3 {
-		t.Fatalf("expected 3 discovered models, got %d", len(models))
+	if len(models) != 1 {
+		t.Fatalf("expected 1 discovered model, got %d", len(models))
 	}
 	found, err := mc.FindModel(context.Background(), "amazon.nova-micro-v1:0")
 	if err != nil {
@@ -285,59 +206,6 @@ func TestModelCache_DiscoveryAndFind(t *testing.T) {
 	}
 	if br.foundationCalls != 1 {
 		t.Fatalf("expected one foundation discovery call, got %d", br.foundationCalls)
-	}
-}
-
-func TestModelCapabilityHelpers(t *testing.T) {
-	if !supportsOnDemand(bedrocktypes.FoundationModelSummary{
-		InferenceTypesSupported: []bedrocktypes.InferenceType{bedrocktypes.InferenceTypeOnDemand},
-	}) {
-		t.Fatalf("expected on-demand support true")
-	}
-	if supportsOnDemand(bedrocktypes.FoundationModelSummary{
-		InferenceTypesSupported: []bedrocktypes.InferenceType{bedrocktypes.InferenceTypeProvisioned},
-	}) {
-		t.Fatalf("expected on-demand support false")
-	}
-	if !supportsTextOutput(bedrocktypes.FoundationModelSummary{
-		OutputModalities: []bedrocktypes.ModelModality{bedrocktypes.ModelModalityText},
-	}) {
-		t.Fatalf("expected text output support true")
-	}
-	if supportsTextOutput(bedrocktypes.FoundationModelSummary{
-		OutputModalities: []bedrocktypes.ModelModality{bedrocktypes.ModelModalityImage},
-	}) {
-		t.Fatalf("expected text output support false")
-	}
-	if !hasDisallowedOutputModalities(bedrocktypes.FoundationModelSummary{
-		OutputModalities: []bedrocktypes.ModelModality{bedrocktypes.ModelModalityImage},
-	}) {
-		t.Fatalf("expected disallowed output modality true")
-	}
-	if hasDisallowedOutputModalities(bedrocktypes.FoundationModelSummary{
-		OutputModalities: []bedrocktypes.ModelModality{bedrocktypes.ModelModalityText},
-	}) {
-		t.Fatalf("expected disallowed output modality false")
-	}
-	if got := modelIDFromFoundationARN("arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-8b-instruct-v1:0"); got != "meta.llama3-1-8b-instruct-v1:0" {
-		t.Fatalf("unexpected model id parse: %q", got)
-	}
-	if got := modelIDFromFoundationARN("arn:aws:bedrock:us-east-1::inference-profile/us.meta.llama3"); got != "" {
-		t.Fatalf("expected empty parse for non-foundation arn, got %q", got)
-	}
-	if !profileSupportsTextOnlyOutputs(bedrocktypes.InferenceProfileSummary{
-		Models: []bedrocktypes.InferenceProfileModel{
-			{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-8b-instruct-v1:0")},
-		},
-	}, map[string]bool{"meta.llama3-1-8b-instruct-v1:0": true}) {
-		t.Fatalf("expected profile eligibility true")
-	}
-	if profileSupportsTextOnlyOutputs(bedrocktypes.InferenceProfileSummary{
-		Models: []bedrocktypes.InferenceProfileModel{
-			{ModelArn: aws.String("arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-8b-instruct-v1:0")},
-		},
-	}, map[string]bool{"meta.llama3-1-8b-instruct-v1:0": false}) {
-		t.Fatalf("expected profile eligibility false")
 	}
 }
 

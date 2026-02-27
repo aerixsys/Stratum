@@ -18,24 +18,6 @@ func TestTranslateRequest_ValidationErrors(t *testing.T) {
 		wantErrSub string
 	}{
 		{
-			name:       "invalid performance latency",
-			model:      "anthropic.claude-3-sonnet",
-			extraBody:  `{"performance_config":{"latency":"ultra"}}`,
-			wantErrSub: "unsupported performance_config.latency",
-		},
-		{
-			name:       "invalid service tier",
-			model:      "anthropic.claude-3-sonnet",
-			extraBody:  `{"service_tier":"gold"}`,
-			wantErrSub: "unsupported service_tier",
-		},
-		{
-			name:       "guardrail missing version",
-			model:      "anthropic.claude-3-sonnet",
-			extraBody:  `{"guardrail_config":{"guardrail_identifier":"gr-1"}}`,
-			wantErrSub: "guardrail_config requires both identifier and version",
-		},
-		{
 			name:       "additional request fields must be object",
 			model:      "anthropic.claude-3-sonnet",
 			extraBody:  `{"additional_model_request_fields":["bad"]}`,
@@ -62,7 +44,7 @@ func TestTranslateRequest_ValidationErrors(t *testing.T) {
 				Messages:  []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
 				ExtraBody: json.RawMessage(tt.extraBody),
 			}
-			_, err := TranslateRequest(req, TranslateConfig{})
+			_, err := TranslateRequest(req)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErrSub) {
 				t.Fatalf("expected error containing %q, got %v", tt.wantErrSub, err)
 			}
@@ -80,7 +62,7 @@ func TestParseUserContent_Structured(t *testing.T) {
 		]`),
 	}
 
-	blocks, err := parseUserContent(msg, TranslateConfig{})
+	blocks, err := parseUserContent(msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,24 +82,12 @@ func TestParseUserContent_EmptyImageObject(t *testing.T) {
 		Role:    "user",
 		Content: json.RawMessage(`[{"type":"image_url"}]`),
 	}
-	blocks, err := parseUserContent(msg, TranslateConfig{})
+	blocks, err := parseUserContent(msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(blocks) != 0 {
 		t.Fatalf("expected no blocks for empty image url, got %d", len(blocks))
-	}
-}
-
-func TestReasoningBudgetMapping(t *testing.T) {
-	if reasoningBudget("low") != 1024 {
-		t.Fatalf("unexpected low reasoning budget")
-	}
-	if reasoningBudget("medium") != 4096 {
-		t.Fatalf("unexpected medium reasoning budget")
-	}
-	if reasoningBudget("unknown") != 4096 {
-		t.Fatalf("unexpected default reasoning budget")
 	}
 }
 
@@ -156,7 +126,7 @@ func TestTranslateRequest_MessageRoleCoverage(t *testing.T) {
 			{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`"result"`)},
 		},
 	}
-	in, err := TranslateRequest(req, TranslateConfig{})
+	in, err := TranslateRequest(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -4,48 +4,12 @@ import "strings"
 
 // ── Model Detection Helpers ──
 
-// modelFamily returns a normalized family string for quirk matching.
-func modelFamily(modelID string) string {
-	m := strings.ToLower(modelID)
-	switch {
-	case strings.Contains(m, "claude"):
-		return "claude"
-	case strings.Contains(m, "nova"):
-		return "nova"
-	case strings.Contains(m, "mistral"):
-		return "mistral"
-	case strings.Contains(m, "llama"):
-		return "llama"
-	case strings.Contains(m, "deepseek"):
-		return "deepseek"
-	default:
-		return "unknown"
-	}
-}
-
 // isClaude45Sampling returns true for Claude Sonnet 4.5 and Haiku 4.5,
 // which cannot accept both temperature AND topP simultaneously.
 func isClaude45Sampling(modelID string) bool {
 	m := strings.ToLower(modelID)
 	return strings.Contains(m, "claude-sonnet-4-5") ||
 		strings.Contains(m, "claude-haiku-4-5")
-}
-
-// supportsThinking returns true if the model supports extended thinking.
-func supportsThinking(modelID string) bool {
-	m := strings.ToLower(modelID)
-	return strings.Contains(m, "claude-3-7-sonnet") ||
-		strings.Contains(m, "claude-sonnet-4") ||
-		strings.Contains(m, "claude-opus-4") ||
-		strings.Contains(m, "claude-haiku-4-5")
-}
-
-// isAdaptiveThinkingModel returns true for models where adaptive thinking
-// is recommended over manual budget (Opus 4.6+).
-func isAdaptiveThinkingModel(modelID string) bool {
-	m := strings.ToLower(modelID)
-	return strings.Contains(m, "claude-opus-4-6") ||
-		strings.Contains(m, "opus-4.6")
 }
 
 // ── Prompt Caching Quirks ──

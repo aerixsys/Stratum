@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/stratum/gateway/internal/bedrock"
@@ -10,21 +11,17 @@ import (
 
 // ChatService handles chat request orchestration.
 type ChatService struct {
-	runtime      bedrock.ChatRuntime
-	models       bedrock.ModelDiscovery
-	modelPolicy  ModelPolicy
-	translateCfg bedrock.TranslateConfig
-	defaultModel string
+	runtime     bedrock.ChatRuntime
+	models      bedrock.ModelDiscovery
+	modelPolicy ModelPolicy
 }
 
 // NewChatService constructs a chat service.
-func NewChatService(runtime bedrock.ChatRuntime, models bedrock.ModelDiscovery, cfg bedrock.TranslateConfig, defaultModel string, modelPolicy ModelPolicy) *ChatService {
+func NewChatService(runtime bedrock.ChatRuntime, models bedrock.ModelDiscovery, modelPolicy ModelPolicy) *ChatService {
 	return &ChatService{
-		runtime:      runtime,
-		models:       models,
-		modelPolicy:  modelPolicy,
-		translateCfg: cfg,
-		defaultModel: strings.TrimSpace(defaultModel),
+		runtime:     runtime,
+		models:      models,
+		modelPolicy: modelPolicy,
 	}
 }
 
@@ -57,14 +54,26 @@ func (s *ChatService) buildInput(ctx context.Context, req *schema.ChatRequest) (
 	if len(req.Messages) == 0 {
 		return nil, badRequest("messages is required", nil)
 	}
+	if strings.TrimSpace(req.ReasoningEffort) != "" {
+		return nil, badRequest("reasoning_effort is not supported; use reasoning.exclude and extra_body.additional_model_request_fields", nil)
+	}
+	if req.Reasoning != nil && req.Reasoning.HasUnsupportedControls() {
+		return nil, badRequest(
+			fmt.Sprintf(
+				"unsupported top-level reasoning controls (%s); only reasoning.exclude is supported. Use extra_body.additional_model_request_fields for provider-specific reasoning controls",
+				strings.Join(req.Reasoning.UnsupportedControls(), ", "),
+			),
+			nil,
+		)
+	}
+	if err := req.ValidateExtraBodyCoreOnly(); err != nil {
+		return nil, badRequest(err.Error(), nil)
+	}
 
 	normalized := *req
 	normalized.Model = strings.TrimSpace(req.Model)
 	if normalized.Model == "" {
-		if s.defaultModel == "" {
-			return nil, badRequest("model is required", nil)
-		}
-		normalized.Model = s.defaultModel
+		return nil, badRequest("model is required", nil)
 	}
 	if s.modelPolicy != nil && s.modelPolicy.IsBlocked(normalized.Model) {
 		return nil, badRequest("model "+normalized.Model+" is blocked by policy", nil)
@@ -80,7 +89,7 @@ func (s *ChatService) buildInput(ctx context.Context, req *schema.ChatRequest) (
 		}
 	}
 
-	input, err := bedrock.TranslateRequest(&normalized, s.translateCfg)
+	input, err := bedrock.TranslateRequest(&normalized)
 	if err != nil {
 		return nil, badRequest("invalid request for model translation", err)
 	}

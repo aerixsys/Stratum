@@ -35,14 +35,6 @@ import (
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 )
 
-func envBool(key string, fallback bool) bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	if v == "" {
-		return fallback
-	}
-	return v == "1" || v == "true" || v == "yes"
-}
-
 func deref(v *string) string {
 	if v == nil {
 		return ""
@@ -82,31 +74,6 @@ func hasDisallowedOutputModalities(fm bedrocktypes.FoundationModelSummary) bool 
 		}
 	}
 	return false
-}
-
-func modelIDFromFoundationARN(modelARN string) string {
-	const marker = "foundation-model/"
-	idx := strings.Index(modelARN, marker)
-	if idx == -1 {
-		return ""
-	}
-	return strings.TrimSpace(modelARN[idx+len(marker):])
-}
-
-func profileSupportsTextOnlyOutputs(profile bedrocktypes.InferenceProfileSummary, foundations map[string]bool) bool {
-	if len(profile.Models) == 0 {
-		return false
-	}
-	for _, m := range profile.Models {
-		modelID := modelIDFromFoundationARN(deref(m.ModelArn))
-		if modelID == "" {
-			return false
-		}
-		if !foundations[modelID] {
-			return false
-		}
-	}
-	return true
 }
 
 func hasModality(mods []bedrocktypes.ModelModality, target bedrocktypes.ModelModality) bool {
@@ -167,8 +134,6 @@ func main() {
 	if region == "" {
 		region = "us-east-1"
 	}
-	enableCross := envBool("ENABLE_CROSS_REGION_INFERENCE", true)
-	enableApp := envBool("ENABLE_APP_INFERENCE_PROFILES", false)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -188,7 +153,6 @@ func main() {
 
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	foundationPath := fmt.Sprintf("%s/aws-foundation-catalog-%s.csv", outDir, ts)
-	profilesPath := fmt.Sprintf("%s/aws-inference-profiles-%s.csv", outDir, ts)
 	discoveredPath := fmt.Sprintf("%s/aws-discovered-equivalent-%s.txt", outDir, ts)
 	summaryPath := fmt.Sprintf("%s/aws-catalog-summary-%s.txt", outDir, ts)
 
@@ -226,7 +190,6 @@ func main() {
 	})
 
 	seen := map[string]bool{}
-	foundationsForProfiles := map[string]bool{}
 	discovered := []string{}
 	providerCounts := map[string]int{}
 
@@ -249,8 +212,7 @@ func main() {
 		textOut := hasModality(fm.OutputModalities, bedrocktypes.ModelModalityText)
 		hasImageIn := hasModality(fm.InputModalities, bedrocktypes.ModelModalityImage)
 		hasImageOut := hasModality(fm.OutputModalities, bedrocktypes.ModelModalityImage)
-		foundationsForProfiles[id] = supportsTextOutput(fm) && !hasDisallowedOutputModalities(fm)
-		chatCandidate := onDemand && foundationsForProfiles[id]
+		chatCandidate := onDemand && supportsTextOutput(fm) && !hasDisallowedOutputModalities(fm)
 
 		if chatCandidate {
 			chatLike++
@@ -293,75 +255,6 @@ func main() {
 		})
 	}
 
-	profilesFile, err := os.Create(profilesPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "create %s: %v\n", profilesPath, err)
-		os.Exit(1)
-	}
-	defer profilesFile.Close()
-
-	pw := csv.NewWriter(profilesFile)
-	defer pw.Flush()
-	_ = pw.Write([]string{"profile_id", "profile_name", "type", "status", "model_arns"})
-
-	profileTotal := 0
-	systemProfiles := 0
-	appProfiles := 0
-	var nextToken *string
-	for {
-		out, err := client.ListInferenceProfiles(ctx, &bedrock.ListInferenceProfilesInput{NextToken: nextToken})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "ListInferenceProfiles: %v\n", err)
-			os.Exit(1)
-		}
-
-		for _, p := range out.InferenceProfileSummaries {
-			profileTotal++
-
-				if p.Type == bedrocktypes.InferenceProfileTypeSystemDefined {
-					systemProfiles++
-					if enableCross {
-						id := strings.TrimSpace(deref(p.InferenceProfileId))
-						if id != "" && !seen[id] && profileSupportsTextOnlyOutputs(p, foundationsForProfiles) {
-							seen[id] = true
-							discovered = append(discovered, id)
-						}
-					}
-				}
-				if p.Type == bedrocktypes.InferenceProfileTypeApplication {
-					appProfiles++
-					if enableApp {
-						id := strings.TrimSpace(deref(p.InferenceProfileId))
-						if id != "" && !seen[id] && profileSupportsTextOnlyOutputs(p, foundationsForProfiles) {
-							seen[id] = true
-							discovered = append(discovered, id)
-						}
-					}
-				}
-
-			modelArns := make([]string, 0, len(p.Models))
-			for _, m := range p.Models {
-				if m.ModelArn != nil {
-					modelArns = append(modelArns, *m.ModelArn)
-				}
-			}
-			sort.Strings(modelArns)
-
-			_ = pw.Write([]string{
-				deref(p.InferenceProfileId),
-				deref(p.InferenceProfileName),
-				string(p.Type),
-				string(p.Status),
-				strings.Join(modelArns, "|"),
-			})
-		}
-
-		if out.NextToken == nil || *out.NextToken == "" {
-			break
-		}
-		nextToken = out.NextToken
-	}
-
 	sort.Strings(discovered)
 	if err := os.WriteFile(discoveredPath, []byte(strings.Join(discovered, "\n")+"\n"), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "write %s: %v\n", discoveredPath, err)
@@ -376,16 +269,11 @@ func main() {
 
 	summary := []string{
 		fmt.Sprintf("region=%s", region),
-		fmt.Sprintf("enable_cross_region_inference=%v", enableCross),
-		fmt.Sprintf("enable_app_inference_profiles=%v", enableApp),
 		"",
 		fmt.Sprintf("foundation_raw=%d", foundationRaw),
 		fmt.Sprintf("foundation_chat_like_candidates(on_demand+text)=%d", chatLike),
 		fmt.Sprintf("foundation_with_image_input=%d", imageIn),
 		fmt.Sprintf("foundation_with_image_output=%d", imageOut),
-		fmt.Sprintf("inference_profiles_total=%d", profileTotal),
-		fmt.Sprintf("inference_profiles_system=%d", systemProfiles),
-		fmt.Sprintf("inference_profiles_application=%d", appProfiles),
 		fmt.Sprintf("startup_discovered_equivalent=%d", len(discovered)),
 		"",
 		"provider_counts_foundation_raw:",
@@ -400,7 +288,6 @@ func main() {
 
 	fmt.Println("generated:")
 	fmt.Printf("- %s\n", foundationPath)
-	fmt.Printf("- %s\n", profilesPath)
 	fmt.Printf("- %s\n", discoveredPath)
 	fmt.Printf("- %s\n", summaryPath)
 }

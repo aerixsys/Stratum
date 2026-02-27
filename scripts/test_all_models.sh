@@ -59,9 +59,6 @@ fi
 
 if [[ -z "$API_KEY" && -f "$ENV_FILE" ]]; then
   API_KEY="$(awk -F= '/^API_KEY=/{print $2}' "$ENV_FILE" | tail -n1 | tr -d '\r"')"
-  if [[ -z "$API_KEY" ]]; then
-    API_KEY="$(awk -F= '/^OPENAI_API_KEY=/{print $2}' "$ENV_FILE" | tail -n1 | tr -d '\r"')"
-  fi
 fi
 
 if [[ -z "$API_KEY" ]]; then
@@ -112,8 +109,6 @@ for model_id in "${models[@]}"; do
     '{model:$model,messages:[{role:"user",content:$prompt}],max_tokens:$max_tokens}')"
 
   start_ms="$(date +%s%3N)"
-  raw_out=""
-  curl_err=""
   set +e
   raw_out="$(curl -sS --max-time "$TIMEOUT_SEC" -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
     -X POST "${BASE_URL}${endpoint}" -d "$payload" -w $'\n%{http_code}' 2>&1)"

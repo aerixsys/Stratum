@@ -101,8 +101,6 @@ func buildProtectedTestRouterWithPolicy(cfg *config.Config, modelPolicy service.
 	chatHandler := handler.NewChatHandler(service.NewChatService(
 		integrationChatRuntime{},
 		modelsDiscovery,
-		bedrock.TranslateConfig{},
-		"",
 		modelPolicy,
 	))
 	modelsHandler := handler.NewModelsHandler(service.NewModelsService(modelsDiscovery, modelPolicy))
@@ -111,9 +109,8 @@ func buildProtectedTestRouterWithPolicy(cfg *config.Config, modelPolicy service.
 	router.Use(gin.Recovery())
 	router.Use(middleware.RequestID())
 	router.Use(requestLogger("error"))
-	router.Use(corsMiddleware(cfg))
+	router.Use(corsMiddleware())
 	router.Use(middleware.BodyLimit(cfg.MaxRequestBodyBytes))
-	router.Use(middleware.NewRateLimiter(cfg.RateLimitRPM, cfg.RateLimitBurst).Middleware())
 
 	v1 := router.Group("/v1")
 	v1.Use(middleware.APIKeyAuth(cfg.APIKey))
@@ -123,25 +120,13 @@ func buildProtectedTestRouterWithPolicy(cfg *config.Config, modelPolicy service.
 		v1.POST("/chat/completions", chatHandler.Handle)
 	}
 
-	apiV1 := router.Group("/api/v1")
-	apiV1.Use(middleware.APIKeyAuth(cfg.APIKey))
-	{
-		apiV1.GET("/models", modelsHandler.Handle)
-		apiV1.GET("/models/:id", modelsHandler.HandleGet)
-		apiV1.POST("/chat/completions", chatHandler.Handle)
-	}
-
 	return router
 }
 
-func TestProtectedRoutes_AuthAcrossPrefixes(t *testing.T) {
+func TestProtectedRoutes_Auth(t *testing.T) {
 	cfg := &config.Config{
 		APIKey:              "test-key",
 		MaxRequestBodyBytes: 1024 * 1024,
-		RateLimitRPM:        1000,
-		RateLimitBurst:      1000,
-		AllowAnyOrigin:      true,
-		AllowedOrigins:      []string{"*"},
 	}
 	router := buildProtectedTestRouter(cfg)
 
@@ -152,11 +137,9 @@ func TestProtectedRoutes_AuthAcrossPrefixes(t *testing.T) {
 		expectStatus int
 	}{
 		{name: "missing auth v1", path: "/v1/models", expectStatus: http.StatusUnauthorized},
-		{name: "missing auth api v1", path: "/api/v1/models", expectStatus: http.StatusUnauthorized},
 		{name: "malformed auth", path: "/v1/models", authHeader: "Bearer", expectStatus: http.StatusUnauthorized},
 		{name: "wrong auth", path: "/v1/models", authHeader: "Bearer wrong", expectStatus: http.StatusUnauthorized},
 		{name: "valid auth", path: "/v1/models", authHeader: "Bearer test-key", expectStatus: http.StatusOK},
-		{name: "valid auth api v1", path: "/api/v1/models", authHeader: "Bearer test-key", expectStatus: http.StatusOK},
 	}
 
 	for _, tc := range tests {
@@ -183,10 +166,6 @@ func TestProtectedRoutes_CORSPreflightBeforeAuth(t *testing.T) {
 	cfg := &config.Config{
 		APIKey:              "test-key",
 		MaxRequestBodyBytes: 1024 * 1024,
-		RateLimitRPM:        1000,
-		RateLimitBurst:      1000,
-		AllowAnyOrigin:      false,
-		AllowedOrigins:      []string{"https://app.example.com"},
 	}
 	router := buildProtectedTestRouter(cfg)
 
@@ -199,8 +178,8 @@ func TestProtectedRoutes_CORSPreflightBeforeAuth(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("expected 204 preflight, got %d", rr.Code)
 	}
-	if rr.Header().Get("Access-Control-Allow-Origin") != "https://app.example.com" {
-		t.Fatalf("expected allow origin header for preflight")
+	if rr.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("expected wildcard allow origin header for preflight")
 	}
 }
 
@@ -208,10 +187,6 @@ func TestProtectedRoutes_BodyLimitBeforeBind(t *testing.T) {
 	cfg := &config.Config{
 		APIKey:              "test-key",
 		MaxRequestBodyBytes: 128,
-		RateLimitRPM:        1000,
-		RateLimitBurst:      1000,
-		AllowAnyOrigin:      true,
-		AllowedOrigins:      []string{"*"},
 	}
 	router := buildProtectedTestRouter(cfg)
 
@@ -230,64 +205,10 @@ func TestProtectedRoutes_BodyLimitBeforeBind(t *testing.T) {
 	assertErrorType(t, rr.Body.Bytes(), "invalid_request_error")
 }
 
-func TestProtectedRoutes_RateLimitInterplayByKeyAndIP(t *testing.T) {
-	cfg := &config.Config{
-		APIKey:              "test-key",
-		MaxRequestBodyBytes: 1024 * 1024,
-		RateLimitRPM:        60,
-		RateLimitBurst:      1,
-		AllowAnyOrigin:      true,
-		AllowedOrigins:      []string{"*"},
-	}
-	router := buildProtectedTestRouter(cfg)
-
-	// Per-key limiting on authenticated requests.
-	req1 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	req1.RemoteAddr = "203.0.113.13:4444"
-	req1.Header.Set("Authorization", "Bearer test-key")
-	rr1 := httptest.NewRecorder()
-	router.ServeHTTP(rr1, req1)
-	if rr1.Code != http.StatusOK {
-		t.Fatalf("expected first authenticated request 200, got %d", rr1.Code)
-	}
-
-	req2 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	req2.RemoteAddr = "203.0.113.13:4444"
-	req2.Header.Set("Authorization", "Bearer test-key")
-	rr2 := httptest.NewRecorder()
-	router.ServeHTTP(rr2, req2)
-	if rr2.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected second authenticated request 429, got %d", rr2.Code)
-	}
-	assertErrorType(t, rr2.Body.Bytes(), "rate_limit_error")
-
-	// Per-IP limiting when Authorization header is missing.
-	unauth1 := httptest.NewRequest(http.MethodGet, "/api/v1/models", nil)
-	unauth1.RemoteAddr = "203.0.113.14:4444"
-	unauthRR1 := httptest.NewRecorder()
-	router.ServeHTTP(unauthRR1, unauth1)
-	if unauthRR1.Code != http.StatusUnauthorized {
-		t.Fatalf("expected first unauth request 401, got %d", unauthRR1.Code)
-	}
-
-	unauth2 := httptest.NewRequest(http.MethodGet, "/api/v1/models", nil)
-	unauth2.RemoteAddr = "203.0.113.14:4444"
-	unauthRR2 := httptest.NewRecorder()
-	router.ServeHTTP(unauthRR2, unauth2)
-	if unauthRR2.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected second unauth request 429 due ip limiter, got %d", unauthRR2.Code)
-	}
-	assertErrorType(t, unauthRR2.Body.Bytes(), "rate_limit_error")
-}
-
 func TestProtectedRoutes_RequestIDPropagationAndErrorEnvelope(t *testing.T) {
 	cfg := &config.Config{
 		APIKey:              "test-key",
 		MaxRequestBodyBytes: 1024 * 1024,
-		RateLimitRPM:        1000,
-		RateLimitBurst:      1000,
-		AllowAnyOrigin:      true,
-		AllowedOrigins:      []string{"*"},
 	}
 	router := buildProtectedTestRouter(cfg)
 
@@ -320,14 +241,69 @@ func TestProtectedRoutes_RequestIDPropagationAndErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestProtectedRoutes_ProfileLikeModelRejected(t *testing.T) {
+	cfg := &config.Config{
+		APIKey:              "test-key",
+		MaxRequestBodyBytes: 1024 * 1024,
+	}
+	router := buildProtectedTestRouter(cfg)
+
+	path := "/v1/chat/completions"
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(
+		`{"model":"us.profile.system","messages":[{"role":"user","content":"hello"}]}`,
+	))
+	req.RemoteAddr = "203.0.113.23:4444"
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for profile-like model on %s, got %d body=%s", path, rr.Code, rr.Body.String())
+	}
+	assertErrorType(t, rr.Body.Bytes(), "invalid_request_error")
+	if !strings.Contains(strings.ToLower(rr.Body.String()), "unsupported model") {
+		t.Fatalf("expected unsupported-model message on %s, got %s", path, rr.Body.String())
+	}
+}
+
+func TestProtectedRoutes_ModelRequired(t *testing.T) {
+	cfg := &config.Config{
+		APIKey:              "test-key",
+		MaxRequestBodyBytes: 1024 * 1024,
+	}
+	router := buildProtectedTestRouter(cfg)
+
+	path := "/v1/chat/completions"
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(
+		`{"messages":[{"role":"user","content":"hello"}]}`,
+	))
+	req.RemoteAddr = "203.0.113.16:4444"
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing model on %s, got %d body=%s", path, rr.Code, rr.Body.String())
+	}
+	assertErrorType(t, rr.Body.Bytes(), "invalid_request_error")
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("expected valid JSON envelope on %s, got err=%v body=%s", path, err, rr.Body.String())
+	}
+	errObj, _ := parsed["error"].(map[string]interface{})
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(strings.ToLower(msg), "model is required") {
+		t.Fatalf("expected model-required message on %s, got %q", path, msg)
+	}
+}
+
 func TestProtectedRoutes_ModelPolicyBlocksAcrossEndpoints(t *testing.T) {
 	cfg := &config.Config{
 		APIKey:              "test-key",
 		MaxRequestBodyBytes: 1024 * 1024,
-		RateLimitRPM:        1000,
-		RateLimitBurst:      1000,
-		AllowAnyOrigin:      true,
-		AllowedOrigins:      []string{"*"},
 	}
 	policy := &integrationModelPolicy{
 		blocked: map[string]bool{
@@ -360,39 +336,33 @@ func TestProtectedRoutes_ModelPolicyBlocksAcrossEndpoints(t *testing.T) {
 	}
 
 	assertModelMissingFromList(t, "/v1/models")
-	assertModelMissingFromList(t, "/api/v1/models")
 
-	for _, path := range []string{
-		"/v1/models/anthropic.claude-3-sonnet-20240229-v1:0",
-		"/api/v1/models/anthropic.claude-3-sonnet-20240229-v1:0",
-	} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.RemoteAddr = "203.0.113.21:4444"
-		req.Header.Set("Authorization", "Bearer test-key")
-		rr := httptest.NewRecorder()
-		router.ServeHTTP(rr, req)
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("expected 404 for blocked model get %s, got %d body=%s", path, rr.Code, rr.Body.String())
-		}
-		assertErrorType(t, rr.Body.Bytes(), "not_found_error")
+	path := "/v1/models/anthropic.claude-3-sonnet-20240229-v1:0"
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.RemoteAddr = "203.0.113.21:4444"
+	req.Header.Set("Authorization", "Bearer test-key")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for blocked model get %s, got %d body=%s", path, rr.Code, rr.Body.String())
 	}
+	assertErrorType(t, rr.Body.Bytes(), "not_found_error")
 
-	for _, path := range []string{"/v1/chat/completions", "/api/v1/chat/completions"} {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(
-			`{"model":"anthropic.claude-3-sonnet-20240229-v1:0","messages":[{"role":"user","content":"hello"}]}`,
-		))
-		req.RemoteAddr = "203.0.113.22:4444"
-		req.Header.Set("Authorization", "Bearer test-key")
-		req.Header.Set("Content-Type", "application/json")
-		rr := httptest.NewRecorder()
-		router.ServeHTTP(rr, req)
-		if rr.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for blocked chat model %s, got %d body=%s", path, rr.Code, rr.Body.String())
-		}
-		assertErrorType(t, rr.Body.Bytes(), "invalid_request_error")
-		if !strings.Contains(strings.ToLower(rr.Body.String()), "blocked by policy") {
-			t.Fatalf("expected blocked-by-policy message for %s, got %s", path, rr.Body.String())
-		}
+	path = "/v1/chat/completions"
+	req = httptest.NewRequest(http.MethodPost, path, strings.NewReader(
+		`{"model":"anthropic.claude-3-sonnet-20240229-v1:0","messages":[{"role":"user","content":"hello"}]}`,
+	))
+	req.RemoteAddr = "203.0.113.22:4444"
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for blocked chat model %s, got %d body=%s", path, rr.Code, rr.Body.String())
+	}
+	assertErrorType(t, rr.Body.Bytes(), "invalid_request_error")
+	if !strings.Contains(strings.ToLower(rr.Body.String()), "blocked by policy") {
+		t.Fatalf("expected blocked-by-policy message for %s, got %s", path, rr.Body.String())
 	}
 
 }

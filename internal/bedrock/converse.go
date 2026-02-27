@@ -15,8 +15,6 @@ import (
 	"github.com/stratum/gateway/internal/schema"
 )
 
-const reasoningTokenEstimateMethod = "char_ratio_v1"
-
 // Converse calls the synchronous Bedrock Converse API and returns an OpenAI ChatResponse.
 func (c *Client) Converse(ctx context.Context, input *ConverseInput) (*schema.ChatResponse, error) {
 	converseInput := &bedrockruntime.ConverseInput{
@@ -39,16 +37,19 @@ func (c *Client) Converse(ctx context.Context, input *ConverseInput) (*schema.Ch
 		return nil, fmt.Errorf("Bedrock Converse: %w", err)
 	}
 
-	return convertConverseOutput(out, input.ModelID), nil
+	return convertConverseOutputWithOptions(out, input.ModelID, input.ReasoningExclude), nil
 }
 
 func convertConverseOutput(out *bedrockruntime.ConverseOutput, modelID string) *schema.ChatResponse {
+	return convertConverseOutputWithOptions(out, modelID, false)
+}
+
+func convertConverseOutputWithOptions(out *bedrockruntime.ConverseOutput, modelID string, reasoningExclude bool) *schema.ChatResponse {
 	msgID := "chatcmpl-" + shortUUID()
 	now := time.Now().Unix()
 
 	var content string
 	var reasoning string
-	var reasoningTextLen int
 	var reasoningSignature string
 	var toolCalls []schema.ToolCall
 
@@ -73,7 +74,6 @@ func convertConverseOutput(out *bedrockruntime.ConverseOutput, modelID string) *
 					case *brtypes.ReasoningContentBlockMemberReasoningText:
 						if rc.Value.Text != nil {
 							reasoning += *rc.Value.Text
-							reasoningTextLen += len(*rc.Value.Text)
 						}
 						if rc.Value.Signature != nil {
 							reasoningSignature = *rc.Value.Signature
@@ -116,13 +116,6 @@ func convertConverseOutput(out *bedrockruntime.ConverseOutput, modelID string) *
 			usage.PromptTokensDetails = promptDetails
 		}
 
-		// Estimate reasoning tokens from character ratio.
-		// Bedrock outputTokens includes both reasoning + output combined.
-		// We use only real reasoning text length (not redacted placeholders).
-		if reasoningTextLen > 0 {
-			estimated := estimateReasoningTokens(usage.CompletionTokens, reasoningTextLen, len(content))
-			usage.CompletionTokensDetails = estimatedCompletionTokenDetails(estimated)
-		}
 	}
 
 	var contentPtr *string
@@ -130,11 +123,11 @@ func convertConverseOutput(out *bedrockruntime.ConverseOutput, modelID string) *
 		contentPtr = &content
 	}
 	var reasoningPtr *string
-	if reasoning != "" {
+	if reasoning != "" && !reasoningExclude {
 		reasoningPtr = &reasoning
 	}
 	var sigPtr *string
-	if reasoningSignature != "" {
+	if reasoningSignature != "" && !reasoningExclude {
 		sigPtr = &reasoningSignature
 	}
 
@@ -226,8 +219,6 @@ type streamSSEState struct {
 	finishReason         string
 	finishChunkSent      bool
 	pendingUsage         *schema.Usage
-	reasoningTextLen     int
-	contentLen           int
 }
 
 func emitConverseSSEStream(
@@ -301,7 +292,6 @@ func handleConverseStreamEvent(
 		delta := e.Value.Delta
 		switch d := delta.(type) {
 		case *brtypes.ContentBlockDeltaMemberText:
-			state.contentLen += len(d.Value)
 			emitSSEValue(schema.ChatResponse{
 				ID:      msgID,
 				Object:  "chat.completion.chunk",
@@ -315,28 +305,31 @@ func handleConverseStreamEvent(
 		case *brtypes.ContentBlockDeltaMemberReasoningContent:
 			switch rd := d.Value.(type) {
 			case *brtypes.ReasoningContentBlockDeltaMemberText:
-				state.reasoningTextLen += len(rd.Value)
-				emitSSEValue(schema.ChatResponse{
-					ID:      msgID,
-					Object:  "chat.completion.chunk",
-					Created: now,
-					Model:   input.ModelID,
-					Choices: []schema.Choice{{
-						Index: 0,
-						Delta: &schema.ResponseMessage{Reasoning: aws.String(rd.Value)},
-					}},
-				}, emit)
+				if !input.ReasoningExclude {
+					emitSSEValue(schema.ChatResponse{
+						ID:      msgID,
+						Object:  "chat.completion.chunk",
+						Created: now,
+						Model:   input.ModelID,
+						Choices: []schema.Choice{{
+							Index: 0,
+							Delta: &schema.ResponseMessage{Reasoning: aws.String(rd.Value)},
+						}},
+					}, emit)
+				}
 			case *brtypes.ReasoningContentBlockDeltaMemberSignature:
-				emitSSEValue(schema.ChatResponse{
-					ID:      msgID,
-					Object:  "chat.completion.chunk",
-					Created: now,
-					Model:   input.ModelID,
-					Choices: []schema.Choice{{
-						Index: 0,
-						Delta: &schema.ResponseMessage{ReasoningSignature: aws.String(rd.Value)},
-					}},
-				}, emit)
+				if !input.ReasoningExclude {
+					emitSSEValue(schema.ChatResponse{
+						ID:      msgID,
+						Object:  "chat.completion.chunk",
+						Created: now,
+						Model:   input.ModelID,
+						Choices: []schema.Choice{{
+							Index: 0,
+							Delta: &schema.ResponseMessage{ReasoningSignature: aws.String(rd.Value)},
+						}},
+					}, emit)
+				}
 			case *brtypes.ReasoningContentBlockDeltaMemberRedactedContent:
 				_ = rd
 			}
@@ -404,13 +397,7 @@ func handleConverseStreamEvent(
 		if !input.IncludeUsage || e.Value.Usage == nil {
 			return
 		}
-		usage := buildUsageFromTokenUsage(e.Value.Usage)
-		// Estimate reasoning tokens from accumulated text lengths
-		if state.reasoningTextLen > 0 && usage != nil {
-			estimated := estimateReasoningTokens(usage.CompletionTokens, state.reasoningTextLen, state.contentLen)
-			usage.CompletionTokensDetails = estimatedCompletionTokenDetails(estimated)
-		}
-		state.pendingUsage = usage
+		state.pendingUsage = buildUsageFromTokenUsage(e.Value.Usage)
 	}
 }
 
@@ -492,32 +479,6 @@ func applyConverseFields(dst *bedrockruntime.ConverseInput, input *ConverseInput
 	if fields := mergeAdditionalRequestFields(input); fields != nil {
 		dst.AdditionalModelRequestFields = fields
 	}
-	if len(input.AdditionalModelResponseFieldPaths) > 0 {
-		dst.AdditionalModelResponseFieldPaths = input.AdditionalModelResponseFieldPaths
-	}
-	if len(input.RequestMetadata) > 0 {
-		dst.RequestMetadata = input.RequestMetadata
-	}
-	if input.PerformanceLatency != "" {
-		dst.PerformanceConfig = &brtypes.PerformanceConfiguration{
-			Latency: brtypes.PerformanceConfigLatency(input.PerformanceLatency),
-		}
-	}
-	if input.ServiceTier != "" {
-		dst.ServiceTier = &brtypes.ServiceTier{
-			Type: brtypes.ServiceTierType(input.ServiceTier),
-		}
-	}
-	if input.GuardrailConfig != nil {
-		guardrail := &brtypes.GuardrailConfiguration{
-			GuardrailIdentifier: aws.String(input.GuardrailConfig.Identifier),
-			GuardrailVersion:    aws.String(input.GuardrailConfig.Version),
-		}
-		if input.GuardrailConfig.Trace != "" {
-			guardrail.Trace = brtypes.GuardrailTrace(input.GuardrailConfig.Trace)
-		}
-		dst.GuardrailConfig = guardrail
-	}
 }
 
 func applyConverseStreamFields(dst *bedrockruntime.ConverseStreamInput, input *ConverseInput) {
@@ -527,63 +488,23 @@ func applyConverseStreamFields(dst *bedrockruntime.ConverseStreamInput, input *C
 	if fields := mergeAdditionalRequestFields(input); fields != nil {
 		dst.AdditionalModelRequestFields = fields
 	}
-	if len(input.AdditionalModelResponseFieldPaths) > 0 {
-		dst.AdditionalModelResponseFieldPaths = input.AdditionalModelResponseFieldPaths
-	}
-	if len(input.RequestMetadata) > 0 {
-		dst.RequestMetadata = input.RequestMetadata
-	}
-	if input.PerformanceLatency != "" {
-		dst.PerformanceConfig = &brtypes.PerformanceConfiguration{
-			Latency: brtypes.PerformanceConfigLatency(input.PerformanceLatency),
-		}
-	}
-	if input.ServiceTier != "" {
-		dst.ServiceTier = &brtypes.ServiceTier{
-			Type: brtypes.ServiceTierType(input.ServiceTier),
-		}
-	}
-	if input.GuardrailConfig != nil {
-		guardrail := &brtypes.GuardrailStreamConfiguration{
-			GuardrailIdentifier: aws.String(input.GuardrailConfig.Identifier),
-			GuardrailVersion:    aws.String(input.GuardrailConfig.Version),
-		}
-		if input.GuardrailConfig.Trace != "" {
-			guardrail.Trace = brtypes.GuardrailTrace(input.GuardrailConfig.Trace)
-		}
-		if input.GuardrailConfig.StreamProcessing != "" {
-			guardrail.StreamProcessingMode = brtypes.GuardrailStreamProcessingMode(input.GuardrailConfig.StreamProcessing)
-		}
-		dst.GuardrailConfig = guardrail
-	}
 }
 
 func mergeAdditionalRequestFields(input *ConverseInput) document.Interface {
 	if input == nil {
 		return nil
 	}
-
+	if input.AdditionalModelRequestFields == nil {
+		return nil
+	}
+	b, err := input.AdditionalModelRequestFields.MarshalSmithyDocument()
+	if err != nil {
+		return nil
+	}
 	var merged map[string]interface{}
-	if input.AdditionalModelRequestFields != nil {
-		b, err := input.AdditionalModelRequestFields.MarshalSmithyDocument()
-		if err == nil {
-			var m map[string]interface{}
-			if err := json.Unmarshal(b, &m); err == nil {
-				merged = m
-			}
-		}
+	if err := json.Unmarshal(b, &merged); err != nil {
+		return nil
 	}
-
-	if input.ThinkingConfig != nil && input.ThinkingConfig.Enabled {
-		if merged == nil {
-			merged = map[string]interface{}{}
-		}
-		merged["thinking"] = map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": input.ThinkingConfig.BudgetToken,
-		}
-	}
-
 	if len(merged) == 0 {
 		return nil
 	}
@@ -607,34 +528,4 @@ func smithyDocumentToRaw(doc document.Interface) json.RawMessage {
 func shortUUID() string {
 	u := uuid.New()
 	return u.String()[:8]
-}
-
-func estimatedCompletionTokenDetails(estimated int) *schema.CompletionTokensDetails {
-	if estimated <= 0 {
-		return nil
-	}
-	return &schema.CompletionTokensDetails{
-		ReasoningTokens:          estimated,
-		ReasoningTokensEstimated: true,
-		ReasoningTokensMethod:    reasoningTokenEstimateMethod,
-	}
-}
-
-// estimateReasoningTokens splits outputTokens proportionally between reasoning
-// and content based on their character lengths. Bedrock's outputTokens includes
-// both reasoning and regular output combined — this gives us a good estimate
-// without needing a tokenizer library.
-func estimateReasoningTokens(outputTokens, reasoningLen, contentLen int) int {
-	if outputTokens <= 0 || reasoningLen <= 0 {
-		return 0
-	}
-	totalLen := reasoningLen + contentLen
-	if totalLen <= 0 {
-		return 0
-	}
-	estimated := int(float64(outputTokens) * float64(reasoningLen) / float64(totalLen))
-	if estimated > outputTokens {
-		estimated = outputTokens
-	}
-	return estimated
 }

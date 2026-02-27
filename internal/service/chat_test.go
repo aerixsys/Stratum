@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stratum/gateway/internal/bedrock"
@@ -56,36 +57,10 @@ func (f *fakeModels) FindModel(ctx context.Context, modelID string) (*schema.Mod
 	return &m, nil
 }
 
-func TestChatService_DefaultModelFallback(t *testing.T) {
-	rt := &fakeChatRuntime{resp: &schema.ChatResponse{Object: "chat.completion"}}
-	models := &fakeModels{
-		models: map[string]schema.Model{
-			"anthropic.claude-3-sonnet": {ID: "anthropic.claude-3-sonnet"},
-		},
-	}
-	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "anthropic.claude-3-sonnet", nil)
-
-	req := &schema.ChatRequest{
-		Messages: []schema.Message{
-			{Role: "user", Content: json.RawMessage(`"hello"`)},
-		},
-	}
-	_, err := svc.Converse(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if rt.lastInput == nil {
-		t.Fatalf("expected runtime input")
-	}
-	if rt.lastInput.ModelID != "anthropic.claude-3-sonnet" {
-		t.Fatalf("expected fallback model, got %s", rt.lastInput.ModelID)
-	}
-}
-
 func TestChatService_RejectUnsupportedModel(t *testing.T) {
 	rt := &fakeChatRuntime{}
 	models := &fakeModels{models: map[string]schema.Model{}}
-	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil)
+	svc := NewChatService(rt, models, nil)
 
 	req := &schema.ChatRequest{
 		Model: "missing-model",
@@ -113,7 +88,7 @@ func TestChatService_TranslatesStreamIncludeUsage(t *testing.T) {
 			"anthropic.claude-3-sonnet": {ID: "anthropic.claude-3-sonnet"},
 		},
 	}
-	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil)
+	svc := NewChatService(rt, models, nil)
 	req := &schema.ChatRequest{
 		Model: "anthropic.claude-3-sonnet",
 		Messages: []schema.Message{
@@ -144,7 +119,7 @@ func TestChatService_TranslatesStreamIncludeUsage(t *testing.T) {
 }
 
 func TestChatService_NilRequest(t *testing.T) {
-	svc := NewChatService(&fakeChatRuntime{}, nil, bedrock.TranslateConfig{}, "", nil)
+	svc := NewChatService(&fakeChatRuntime{}, nil, nil)
 	_, err := svc.Converse(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error")
@@ -155,8 +130,8 @@ func TestChatService_NilRequest(t *testing.T) {
 	}
 }
 
-func TestChatService_ModelRequiredWithoutFallback(t *testing.T) {
-	svc := NewChatService(&fakeChatRuntime{}, nil, bedrock.TranslateConfig{}, "", nil)
+func TestChatService_ModelRequired(t *testing.T) {
+	svc := NewChatService(&fakeChatRuntime{}, nil, nil)
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
 		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
 	})
@@ -167,10 +142,77 @@ func TestChatService_ModelRequiredWithoutFallback(t *testing.T) {
 	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
 		t.Fatalf("expected bad request service error, got %v", err)
 	}
+	if svcErr.Message != "model is required" {
+		t.Fatalf("expected model required message, got %q", svcErr.Message)
+	}
+}
+
+func TestChatService_ModelRequiredWhitespace(t *testing.T) {
+	svc := NewChatService(&fakeChatRuntime{}, nil, nil)
+	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
+		Model:    "   ",
+		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var svcErr *Error
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+		t.Fatalf("expected bad request service error, got %v", err)
+	}
+	if !strings.Contains(svcErr.Message, "model is required") {
+		t.Fatalf("expected model required message, got %q", svcErr.Message)
+	}
+}
+
+func TestChatService_RejectsLegacyReasoningEffort(t *testing.T) {
+	svc := NewChatService(&fakeChatRuntime{}, nil, nil)
+	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
+		Model:           "m1",
+		ReasoningEffort: "medium",
+		Messages:        []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var svcErr *Error
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+		t.Fatalf("expected bad request service error, got %v", err)
+	}
+	if svcErr.Message != "reasoning_effort is not supported; use reasoning.exclude and extra_body.additional_model_request_fields" {
+		t.Fatalf("unexpected error message: %q", svcErr.Message)
+	}
+}
+
+func TestChatService_RejectsTopLevelReasoningControlsBeyondExclude(t *testing.T) {
+	var req schema.ChatRequest
+	if err := json.Unmarshal([]byte(`{
+		"model":"m1",
+		"messages":[{"role":"user","content":"hello"}],
+		"reasoning":{"exclude":true,"enabled":true}
+	}`), &req); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+
+	svc := NewChatService(&fakeChatRuntime{}, nil, nil)
+	_, err := svc.Converse(context.Background(), &req)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var svcErr *Error
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+		t.Fatalf("expected bad request service error, got %v", err)
+	}
+	if !strings.Contains(svcErr.Message, "only reasoning.exclude is supported") {
+		t.Fatalf("unexpected error message: %q", svcErr.Message)
+	}
+	if !strings.Contains(svcErr.Message, "extra_body.additional_model_request_fields") {
+		t.Fatalf("unexpected error message: %q", svcErr.Message)
+	}
 }
 
 func TestChatService_ModelLookupError(t *testing.T) {
-	svc := NewChatService(&fakeChatRuntime{}, &fakeModels{err: errors.New("lookup failed")}, bedrock.TranslateConfig{}, "", nil)
+	svc := NewChatService(&fakeChatRuntime{}, &fakeModels{err: errors.New("lookup failed")}, nil)
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
 		Model:    "m1",
 		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
@@ -186,12 +228,12 @@ func TestChatService_ModelLookupError(t *testing.T) {
 
 func TestChatService_TranslateError(t *testing.T) {
 	models := &fakeModels{models: map[string]schema.Model{"m1": {ID: "m1"}}}
-	svc := NewChatService(&fakeChatRuntime{}, models, bedrock.TranslateConfig{}, "", nil)
+	svc := NewChatService(&fakeChatRuntime{}, models, nil)
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
 		Model:    "m1",
 		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
 		ExtraBody: json.RawMessage(`{
-			"additional_model_response_field_paths": ["bad-path"]
+			"guardrail_config": {"guardrail_identifier":"gr-1","guardrail_version":"1"}
 		}`),
 	})
 	if err == nil {
@@ -201,12 +243,15 @@ func TestChatService_TranslateError(t *testing.T) {
 	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
 		t.Fatalf("expected bad request service error, got %v", err)
 	}
+	if !strings.Contains(svcErr.Message, "unsupported extra_body fields") {
+		t.Fatalf("unexpected error message: %q", svcErr.Message)
+	}
 }
 
 func TestChatService_RuntimeErrorPassThrough(t *testing.T) {
 	rt := &fakeChatRuntime{err: errors.New("upstream failed")}
 	models := &fakeModels{models: map[string]schema.Model{"m1": {ID: "m1"}}}
-	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil)
+	svc := NewChatService(rt, models, nil)
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
 		Model:    "m1",
 		Messages: []schema.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}},
@@ -228,7 +273,7 @@ func TestChatService_BlockedModel(t *testing.T) {
 			"anthropic.claude-3-sonnet": true,
 		},
 	}
-	svc := NewChatService(rt, models, bedrock.TranslateConfig{}, "", p)
+	svc := NewChatService(rt, models, p)
 
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
 		Model:    "anthropic.claude-3-sonnet",
@@ -243,6 +288,26 @@ func TestChatService_BlockedModel(t *testing.T) {
 	}
 	if svcErr.Message != "model anthropic.claude-3-sonnet is blocked by policy" {
 		t.Fatalf("unexpected error message: %q", svcErr.Message)
+	}
+}
+
+func TestServiceErrorMethodsViaServicePath(t *testing.T) {
+	cause := errors.New("upstream boom")
+	errWithCause := internal("failed to validate model", cause)
+
+	if !strings.Contains(errWithCause.Error(), "failed to validate model: upstream boom") {
+		t.Fatalf("unexpected formatted error: %q", errWithCause.Error())
+	}
+	if !errors.Is(errWithCause, cause) {
+		t.Fatalf("expected errors.Is to unwrap service cause")
+	}
+
+	errNoCause := badRequest("model is required", nil)
+	if errNoCause.Error() != "model is required" {
+		t.Fatalf("unexpected no-cause formatted error: %q", errNoCause.Error())
+	}
+	if errors.Unwrap(errNoCause) != nil {
+		t.Fatalf("expected nil unwrap cause for no-cause service error")
 	}
 }
 

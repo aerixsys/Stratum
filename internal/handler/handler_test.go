@@ -97,7 +97,7 @@ func TestChatHandler_SyncSuccess(t *testing.T) {
 			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
 		},
 	}
-	h := NewChatHandler(service.NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil))
+	h := NewChatHandler(service.NewChatService(rt, models, nil))
 
 	r := gin.New()
 	r.POST("/v1/chat/completions", h.Handle)
@@ -132,7 +132,7 @@ func TestChatHandler_StreamSuccess(t *testing.T) {
 			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
 		},
 	}
-	h := NewChatHandler(service.NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil))
+	h := NewChatHandler(service.NewChatService(rt, models, nil))
 
 	r := gin.New()
 	r.POST("/v1/chat/completions", h.Handle)
@@ -161,7 +161,7 @@ func TestChatHandler_BodyLimit(t *testing.T) {
 			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
 		},
 	}
-	h := NewChatHandler(service.NewChatService(rt, models, bedrock.TranslateConfig{}, "", nil))
+	h := NewChatHandler(service.NewChatService(rt, models, nil))
 
 	r := gin.New()
 	r.Use(middleware.BodyLimit(64))

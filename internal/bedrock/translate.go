@@ -17,17 +17,39 @@ import (
 	"github.com/stratum/gateway/internal/schema"
 )
 
+const (
+	fixedImageByteLimit    int64 = 5 * 1024 * 1024
+	fixedImageFetchTimeout       = 10 * time.Second
+	maxImageRedirects            = 5
+)
+
+type imageFetchOptions struct {
+	maxBytes     int64
+	timeout      time.Duration
+	allowPrivate bool
+}
+
 // ── Request Translation (OpenAI → Bedrock) ──
 
 // TranslateRequest converts an OpenAI ChatRequest into Bedrock Converse input args.
-func TranslateRequest(req *schema.ChatRequest, cfg TranslateConfig) (*ConverseInput, error) {
+func TranslateRequest(req *schema.ChatRequest) (*ConverseInput, error) {
 	extraOpts := req.ParseExtraBody()
 	input := &ConverseInput{
 		ModelID:      req.Model,
 		IncludeUsage: req.StreamOptions != nil && req.StreamOptions.IncludeUsage,
 	}
 
-	thinkingEnabled := req.ReasoningEffort != "" && supportsThinking(req.Model)
+	if req.Reasoning != nil && req.Reasoning.Exclude != nil {
+		input.ReasoningExclude = *req.Reasoning.Exclude
+	}
+
+	userAdditionalFields, err := parseAdditionalModelRequestFields(extraOpts.AdditionalModelRequestFields)
+	if err != nil {
+		return nil, err
+	}
+	if len(userAdditionalFields) > 0 {
+		input.AdditionalModelRequestFields = document.NewLazyDocument(userAdditionalFields)
+	}
 
 	// Parse messages
 	var systemBlocks []brtypes.SystemContentBlock
@@ -44,7 +66,7 @@ func TranslateRequest(req *schema.ChatRequest, cfg TranslateConfig) (*ConverseIn
 			}
 
 		case "user":
-			content, err := parseUserContent(msg, cfg)
+			content, err := parseUserContent(msg)
 			if err != nil {
 				return nil, fmt.Errorf("user message: %w", err)
 			}
@@ -72,10 +94,12 @@ func TranslateRequest(req *schema.ChatRequest, cfg TranslateConfig) (*ConverseIn
 	// Merge consecutive same-role messages (Bedrock requirement)
 	messages = mergeConsecutiveMessages(messages)
 
-	// Determine if prompt caching should be enabled (config + per-request override)
-	cachingEnabled := cfg.EnablePromptCaching
+	// Determine if prompt caching should be enabled (per-request only)
+	cachingEnabled := false
 	if extraOpts.PromptCaching != nil {
 		cachingEnabled = *extraOpts.PromptCaching
+	} else if extraOpts.PromptCachingSystem != nil || extraOpts.PromptCachingMessages != nil || extraOpts.PromptCachingTools != nil || strings.TrimSpace(extraOpts.PromptCachingTTL) != "" {
+		cachingEnabled = true
 	}
 
 	systemCaching := cachingEnabled
@@ -115,25 +139,22 @@ func TranslateRequest(req *schema.ChatRequest, cfg TranslateConfig) (*ConverseIn
 		hasInfConfig = true
 	}
 
-	// Thinking is incompatible with temperature, topP, topK
-	if !thinkingEnabled {
-		wantTemp := req.Temperature != nil
-		wantTopP := req.TopP != nil
+	wantTemp := req.Temperature != nil
+	wantTopP := req.TopP != nil
 
-		// Claude Sonnet 4.5 / Haiku 4.5: cannot accept both temperature AND topP
-		if wantTemp && wantTopP && isClaude45Sampling(req.Model) {
-			// Keep temperature, drop topP
-			wantTopP = false
-		}
+	// Claude Sonnet 4.5 / Haiku 4.5: cannot accept both temperature AND topP
+	if wantTemp && wantTopP && isClaude45Sampling(req.Model) {
+		// Keep temperature, drop topP
+		wantTopP = false
+	}
 
-		if wantTemp {
-			infConfig.Temperature = req.Temperature
-			hasInfConfig = true
-		}
-		if wantTopP {
-			infConfig.TopP = req.TopP
-			hasInfConfig = true
-		}
+	if wantTemp {
+		infConfig.Temperature = req.Temperature
+		hasInfConfig = true
+	}
+	if wantTopP {
+		infConfig.TopP = req.TopP
+		hasInfConfig = true
 	}
 
 	if len(req.Stop) > 0 {
@@ -178,112 +199,39 @@ func TranslateRequest(req *schema.ChatRequest, cfg TranslateConfig) (*ConverseIn
 
 		input.ToolConfig = toolCfg
 	}
-
-	// Reasoning / Extended thinking via additionalModelRequestFields
-	if thinkingEnabled {
-		budget := reasoningBudget(req.ReasoningEffort)
-		input.ThinkingConfig = &ThinkingConfig{
-			Enabled:     true,
-			BudgetToken: budget,
-		}
-	}
-
-	if len(extraOpts.AdditionalModelRequestFields) > 0 {
-		var reqFields interface{}
-		if err := json.Unmarshal(extraOpts.AdditionalModelRequestFields, &reqFields); err != nil {
-			return nil, fmt.Errorf("extra_body.additional_model_request_fields must be valid JSON: %w", err)
-		}
-		if _, ok := reqFields.(map[string]interface{}); !ok {
-			return nil, fmt.Errorf("extra_body.additional_model_request_fields must be a JSON object")
-		}
-		input.AdditionalModelRequestFields = document.NewLazyDocument(reqFields)
-	}
-	if len(extraOpts.AdditionalModelResponseFieldPaths) > 0 {
-		for _, p := range extraOpts.AdditionalModelResponseFieldPaths {
-			if !strings.HasPrefix(p, "/") {
-				return nil, fmt.Errorf("invalid additional_model_response_field_paths entry %q: must start with /", p)
-			}
-		}
-		input.AdditionalModelResponseFieldPaths = extraOpts.AdditionalModelResponseFieldPaths
-	}
-	if len(extraOpts.RequestMetadata) > 0 {
-		input.RequestMetadata = extraOpts.RequestMetadata
-	}
-	if extraOpts.PerformanceLatency != "" {
-		switch extraOpts.PerformanceLatency {
-		case string(brtypes.PerformanceConfigLatencyOptimized), string(brtypes.PerformanceConfigLatencyStandard):
-			input.PerformanceLatency = extraOpts.PerformanceLatency
-		default:
-			return nil, fmt.Errorf("unsupported performance_config.latency %q", extraOpts.PerformanceLatency)
-		}
-	}
-	if extraOpts.ServiceTier != "" {
-		switch extraOpts.ServiceTier {
-		case string(brtypes.ServiceTierTypeDefault),
-			string(brtypes.ServiceTierTypePriority),
-			string(brtypes.ServiceTierTypeFlex),
-			string(brtypes.ServiceTierTypeReserved):
-			input.ServiceTier = extraOpts.ServiceTier
-		default:
-			return nil, fmt.Errorf("unsupported service_tier %q", extraOpts.ServiceTier)
-		}
-	}
-	if extraOpts.GuardrailIdentifier != "" || extraOpts.GuardrailVersion != "" {
-		if extraOpts.GuardrailIdentifier == "" || extraOpts.GuardrailVersion == "" {
-			return nil, fmt.Errorf("guardrail_config requires both identifier and version")
-		}
-		input.GuardrailConfig = &GuardrailConfig{
-			Identifier:       extraOpts.GuardrailIdentifier,
-			Version:          extraOpts.GuardrailVersion,
-			Trace:            extraOpts.GuardrailTrace,
-			StreamProcessing: extraOpts.GuardrailStreamMode,
-		}
-	}
-
 	return input, nil
 }
 
 // ConverseInput holds translated Bedrock request args.
 type ConverseInput struct {
-	ModelID                           string
-	Messages                          []brtypes.Message
-	System                            []brtypes.SystemContentBlock
-	InferenceConfig                   *brtypes.InferenceConfiguration
-	ToolConfig                        *brtypes.ToolConfiguration
-	ThinkingConfig                    *ThinkingConfig
-	GuardrailConfig                   *GuardrailConfig
-	RequestMetadata                   map[string]string
-	AdditionalModelRequestFields      document.Interface
-	AdditionalModelResponseFieldPaths []string
-	PerformanceLatency                string
-	ServiceTier                       string
-	IncludeUsage                      bool
+	ModelID                      string
+	Messages                     []brtypes.Message
+	System                       []brtypes.SystemContentBlock
+	InferenceConfig              *brtypes.InferenceConfiguration
+	ToolConfig                   *brtypes.ToolConfiguration
+	AdditionalModelRequestFields document.Interface
+	IncludeUsage                 bool
+	ReasoningExclude             bool
 }
 
-// ThinkingConfig holds extended thinking parameters.
-type ThinkingConfig struct {
-	Enabled     bool
-	BudgetToken int32
-}
-
-// GuardrailConfig holds guardrail request options.
-type GuardrailConfig struct {
-	Identifier       string
-	Version          string
-	Trace            string
-	StreamProcessing string
-}
-
-type TranslateConfig struct {
-	EnablePromptCaching    bool
-	AllowPrivateImageFetch bool
-	ImageMaxBytes          int64
-	ImageFetchTimeout      time.Duration
+func parseAdditionalModelRequestFields(raw json.RawMessage) (map[string]interface{}, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var reqFields interface{}
+	if err := json.Unmarshal(raw, &reqFields); err != nil {
+		return nil, fmt.Errorf("extra_body.additional_model_request_fields must be valid JSON: %w", err)
+	}
+	obj, ok := reqFields.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("extra_body.additional_model_request_fields must be a JSON object")
+	}
+	return obj, nil
 }
 
 // ── User Content Parsing ──
 
-func parseUserContent(msg schema.Message, cfg TranslateConfig) ([]brtypes.ContentBlock, error) {
+func parseUserContent(msg schema.Message) ([]brtypes.ContentBlock, error) {
 	parts := msg.ContentParts()
 	if len(parts) == 0 {
 		return []brtypes.ContentBlock{
@@ -300,7 +248,7 @@ func parseUserContent(msg schema.Message, cfg TranslateConfig) ([]brtypes.Conten
 			if part.ImageURL == nil {
 				continue
 			}
-			imgBlock, err := parseImageURL(part.ImageURL.URL, cfg)
+			imgBlock, err := parseImageURL(part.ImageURL.URL)
 			if err != nil {
 				return nil, err
 			}
@@ -310,14 +258,22 @@ func parseUserContent(msg schema.Message, cfg TranslateConfig) ([]brtypes.Conten
 	return blocks, nil
 }
 
-func parseImageURL(urlStr string, cfg TranslateConfig) (brtypes.ContentBlock, error) {
-	maxBytes := cfg.ImageMaxBytes
+func parseImageURL(urlStr string) (brtypes.ContentBlock, error) {
+	return parseImageURLWithOptions(urlStr, imageFetchOptions{
+		maxBytes:     fixedImageByteLimit,
+		timeout:      fixedImageFetchTimeout,
+		allowPrivate: false,
+	})
+}
+
+func parseImageURLWithOptions(urlStr string, opts imageFetchOptions) (brtypes.ContentBlock, error) {
+	maxBytes := opts.maxBytes
 	if maxBytes <= 0 {
-		maxBytes = 5 * 1024 * 1024
+		maxBytes = fixedImageByteLimit
 	}
-	timeout := cfg.ImageFetchTimeout
+	timeout := opts.timeout
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = fixedImageFetchTimeout
 	}
 
 	// Handle base64 data URLs
@@ -347,7 +303,7 @@ func parseImageURL(urlStr string, cfg TranslateConfig) (brtypes.ContentBlock, er
 	if parsedURL.Hostname() == "" {
 		return nil, fmt.Errorf("image URL host is required")
 	}
-	if !cfg.AllowPrivateImageFetch {
+	if !opts.allowPrivate {
 		if err := validateRemoteImageHost(parsedURL.Hostname()); err != nil {
 			return nil, err
 		}
@@ -356,13 +312,13 @@ func parseImageURL(urlStr string, cfg TranslateConfig) (brtypes.ContentBlock, er
 	client := &http.Client{
 		Timeout: timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
+			if len(via) >= maxImageRedirects {
 				return fmt.Errorf("fetch image: too many redirects")
 			}
 			if req.URL == nil || (req.URL.Scheme != "http" && req.URL.Scheme != "https") {
 				return fmt.Errorf("fetch image: redirect to unsupported scheme")
 			}
-			if !cfg.AllowPrivateImageFetch {
+			if !opts.allowPrivate {
 				if err := validateRemoteImageHost(req.URL.Hostname()); err != nil {
 					return fmt.Errorf("fetch image: redirect blocked: %w", err)
 				}
@@ -683,16 +639,3 @@ func MapStopReason(reason brtypes.StopReason) string {
 }
 
 // ── Reasoning Budget ──
-
-func reasoningBudget(effort string) int32 {
-	switch strings.ToLower(effort) {
-	case "low":
-		return 1024
-	case "medium":
-		return 4096
-	case "high":
-		return 16384
-	default:
-		return 4096
-	}
-}

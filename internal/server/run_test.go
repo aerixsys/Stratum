@@ -22,10 +22,6 @@ func (s *stubBedrockAPI) ListFoundationModels(ctx context.Context, params *awssd
 	return &awssdkbedrock.ListFoundationModelsOutput{}, nil
 }
 
-func (s *stubBedrockAPI) ListInferenceProfiles(ctx context.Context, params *awssdkbedrock.ListInferenceProfilesInput, optFns ...func(*awssdkbedrock.Options)) (*awssdkbedrock.ListInferenceProfilesOutput, error) {
-	return &awssdkbedrock.ListInferenceProfilesOutput{}, nil
-}
-
 type stubRuntimeAPI struct{}
 
 func (s *stubRuntimeAPI) Converse(ctx context.Context, params *awssdkbedrockruntime.ConverseInput, optFns ...func(*awssdkbedrockruntime.Options)) (*awssdkbedrockruntime.ConverseOutput, error) {
@@ -67,8 +63,6 @@ func TestRun_GracefulShutdown(t *testing.T) {
 		LogLevel:            "error",
 		APIKey:              "sk-test",
 		AWSRegion:           "us-east-1",
-		AllowedOrigins:      []string{"*"},
-		AllowAnyOrigin:      true,
 		MaxRequestBodyBytes: 1024 * 1024,
 	}
 
@@ -90,8 +84,6 @@ func TestRun_BedrockClientError(t *testing.T) {
 		LogLevel:            "error",
 		APIKey:              "sk-test",
 		AWSRegion:           "us-east-1",
-		AllowedOrigins:      []string{"*"},
-		AllowAnyOrigin:      true,
 		MaxRequestBodyBytes: 1024 * 1024,
 	}
 
@@ -111,7 +103,6 @@ var _ interface {
 
 var _ interface {
 	ListFoundationModels(ctx context.Context, params *awssdkbedrock.ListFoundationModelsInput, optFns ...func(*awssdkbedrock.Options)) (*awssdkbedrock.ListFoundationModelsOutput, error)
-	ListInferenceProfiles(ctx context.Context, params *awssdkbedrock.ListInferenceProfilesInput, optFns ...func(*awssdkbedrock.Options)) (*awssdkbedrock.ListInferenceProfilesOutput, error)
 } = (*stubBedrockAPI)(nil)
 
 var _ = http.MethodGet

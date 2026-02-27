@@ -12,10 +12,10 @@ import (
 	"github.com/stratum/gateway/internal/config"
 )
 
-func TestCorsMiddleware_AllowAnyOrigin(t *testing.T) {
+func TestCorsMiddleware_WildcardOrigin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(corsMiddleware(&config.Config{AllowAnyOrigin: true}))
+	r.Use(corsMiddleware())
 	r.GET("/ok", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	req := httptest.NewRequest(http.MethodGet, "/ok", nil)
@@ -31,13 +31,10 @@ func TestCorsMiddleware_AllowAnyOrigin(t *testing.T) {
 	}
 }
 
-func TestCorsMiddleware_AllowListAndOptions(t *testing.T) {
+func TestCorsMiddleware_Options(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(corsMiddleware(&config.Config{
-		AllowAnyOrigin: false,
-		AllowedOrigins: []string{"https://allowed.example"},
-	}))
+	r.Use(corsMiddleware())
 	r.GET("/ok", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	req := httptest.NewRequest(http.MethodOptions, "/ok", nil)
@@ -48,8 +45,8 @@ func TestCorsMiddleware_AllowListAndOptions(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("expected 204 for preflight, got %d", rr.Code)
 	}
-	if rr.Header().Get("Access-Control-Allow-Origin") != "https://allowed.example" {
-		t.Fatalf("expected allow-origin to match allowlist")
+	if rr.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("expected wildcard allow-origin")
 	}
 }
 
@@ -134,11 +131,9 @@ func TestRequestLoggerAndBanner(t *testing.T) {
 	}
 	os.Stdout = wStdout
 	printBanner(&config.Config{
-		Port:                "8000",
-		AWSRegion:           "us-east-1",
-		EnableCrossRegion:   true,
-		EnablePromptCaching: true,
-		LogLevel:            "info",
+		Port:      "8000",
+		AWSRegion: "us-east-1",
+		LogLevel:  "info",
 	})
 	_ = wStdout.Close()
 	os.Stdout = old

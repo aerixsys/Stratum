@@ -145,10 +145,10 @@ func TestParseImageURL_HTTPGuards(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			_, err := parseImageURL(srv.URL, TranslateConfig{
-				AllowPrivateImageFetch: true,
-				ImageMaxBytes:          tt.maxBytes,
-				ImageFetchTimeout:      2 * time.Second,
+			_, err := parseImageURLWithOptions(srv.URL, imageFetchOptions{
+				allowPrivate: true,
+				maxBytes:     tt.maxBytes,
+				timeout:      2 * time.Second,
 			})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErrSub) {
 				t.Fatalf("expected error containing %q, got %v", tt.wantErrSub, err)
@@ -164,10 +164,10 @@ func TestParseImageURL_TooManyRedirects(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := parseImageURL(srv.URL, TranslateConfig{
-		AllowPrivateImageFetch: true,
-		ImageMaxBytes:          1024,
-		ImageFetchTimeout:      2 * time.Second,
+	_, err := parseImageURLWithOptions(srv.URL, imageFetchOptions{
+		allowPrivate: true,
+		maxBytes:     1024,
+		timeout:      2 * time.Second,
 	})
 	if err == nil || !strings.Contains(err.Error(), "too many redirects") {
 		t.Fatalf("expected too many redirects error, got %v", err)
@@ -188,10 +188,10 @@ func TestParseImageURL_HTTPImageSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	block, err := parseImageURL(srv.URL, TranslateConfig{
-		AllowPrivateImageFetch: true,
-		ImageMaxBytes:          1024,
-		ImageFetchTimeout:      2 * time.Second,
+	block, err := parseImageURLWithOptions(srv.URL, imageFetchOptions{
+		allowPrivate: true,
+		maxBytes:     1024,
+		timeout:      2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
