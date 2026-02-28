@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stratum/gateway/internal/bedrock"
+	"github.com/stratum/gateway/internal/logging"
 	"github.com/stratum/gateway/internal/middleware"
 	"github.com/stratum/gateway/internal/schema"
 	"github.com/stratum/gateway/internal/service"
@@ -73,6 +75,22 @@ func newJSONRequest(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	return req
+}
+
+func captureLogger(t *testing.T, level string) *bytes.Buffer {
+	t.Helper()
+	if err := logging.Configure(level); err != nil {
+		t.Fatalf("configure logger: %v", err)
+	}
+	buf := &bytes.Buffer{}
+	logging.SetOutput(buf)
+	logging.SetTTYMode(false)
+	t.Cleanup(func() {
+		logging.SetOutput(nil)
+		logging.SetTTYMode(false)
+		_ = logging.Configure("info")
+	})
+	return buf
 }
 
 func TestChatHandler_SyncSuccess(t *testing.T) {
@@ -149,6 +167,164 @@ func TestChatHandler_StreamSuccess(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "data: [DONE]") {
 		t.Fatalf("expected [DONE] in stream body: %s", rr.Body.String())
+	}
+}
+
+func TestChatHandler_SyncInferenceDoneInfoSingle(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logBuf := captureLogger(t, "info")
+
+	rt := &fakeChatRuntime{
+		resp: &schema.ChatResponse{
+			Object: "chat.completion",
+			Usage:  &schema.Usage{TotalTokens: 17},
+		},
+	}
+	models := &fakeModelDiscovery{
+		models: map[string]schema.Model{
+			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
+		},
+	}
+	h := NewChatHandler(service.NewChatService(rt, models, nil))
+
+	r := gin.New()
+	r.POST("/v1/chat/completions", h.Handle)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newJSONRequest(http.MethodPost, "/v1/chat/completions",
+		`{"model":"amazon.nova-micro-v1:0","messages":[{"role":"user","content":"hello"}]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	logOut := logBuf.String()
+	if got := strings.Count(logOut, "inference_done"); got != 1 {
+		t.Fatalf("expected one inference_done line, got %d logs=%q", got, logOut)
+	}
+	if !strings.Contains(logOut, "stream=false status=ok") {
+		t.Fatalf("expected sync success inference_done line, got %q", logOut)
+	}
+	if !strings.Contains(logOut, "tokens=17") {
+		t.Fatalf("expected token count in inference_done, got %q", logOut)
+	}
+}
+
+func TestChatHandler_StreamInferenceDoneInfoSingleWithUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logBuf := captureLogger(t, "info")
+
+	rt := &fakeChatRuntime{
+		streamData: [][]byte{
+			[]byte("data: {\"id\":\"chatcmpl-1\"}\n\n"),
+			[]byte("data: {\"usage\":{\"total_tokens\":9}}\n\n"),
+			[]byte("data: [DONE]\n\n"),
+		},
+	}
+	models := &fakeModelDiscovery{
+		models: map[string]schema.Model{
+			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
+		},
+	}
+	h := NewChatHandler(service.NewChatService(rt, models, nil))
+
+	r := gin.New()
+	r.POST("/v1/chat/completions", h.Handle)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newJSONRequest(http.MethodPost, "/v1/chat/completions",
+		`{"model":"amazon.nova-micro-v1:0","stream":true,"messages":[{"role":"user","content":"hello"}]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	logOut := logBuf.String()
+	if got := strings.Count(logOut, "inference_done"); got != 1 {
+		t.Fatalf("expected one inference_done line, got %d logs=%q", got, logOut)
+	}
+	if !strings.Contains(logOut, "stream=true status=ok") {
+		t.Fatalf("expected stream success inference_done line, got %q", logOut)
+	}
+	if !strings.Contains(logOut, "tokens=9") {
+		t.Fatalf("expected parsed stream token count, got %q", logOut)
+	}
+}
+
+func TestChatHandler_StreamInferenceDoneInfoSingleWithoutUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logBuf := captureLogger(t, "info")
+
+	rt := &fakeChatRuntime{
+		streamData: [][]byte{
+			[]byte("data: {\"id\":\"chatcmpl-1\"}\n\n"),
+			[]byte("data: [DONE]\n\n"),
+		},
+	}
+	models := &fakeModelDiscovery{
+		models: map[string]schema.Model{
+			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
+		},
+	}
+	h := NewChatHandler(service.NewChatService(rt, models, nil))
+
+	r := gin.New()
+	r.POST("/v1/chat/completions", h.Handle)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newJSONRequest(http.MethodPost, "/v1/chat/completions",
+		`{"model":"amazon.nova-micro-v1:0","stream":true,"messages":[{"role":"user","content":"hello"}]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	logOut := logBuf.String()
+	if got := strings.Count(logOut, "inference_done"); got != 1 {
+		t.Fatalf("expected one inference_done line, got %d logs=%q", got, logOut)
+	}
+	if !strings.Contains(logOut, "stream=true status=ok") {
+		t.Fatalf("expected stream success inference_done line, got %q", logOut)
+	}
+	if strings.Contains(logOut, "tokens=") {
+		t.Fatalf("expected no tokens field when usage is unavailable, got %q", logOut)
+	}
+}
+
+func TestChatHandler_StreamInferenceDoneInfoSingleErrorFromErrorChunk(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logBuf := captureLogger(t, "info")
+
+	rt := &fakeChatRuntime{
+		streamData: [][]byte{
+			[]byte("data: {\"error\":{\"message\":\"Upstream model invocation failed\"}}\n\n"),
+			[]byte("data: [DONE]\n\n"),
+		},
+	}
+	models := &fakeModelDiscovery{
+		models: map[string]schema.Model{
+			"amazon.nova-micro-v1:0": {ID: "amazon.nova-micro-v1:0"},
+		},
+	}
+	h := NewChatHandler(service.NewChatService(rt, models, nil))
+
+	r := gin.New()
+	r.POST("/v1/chat/completions", h.Handle)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newJSONRequest(http.MethodPost, "/v1/chat/completions",
+		`{"model":"amazon.nova-micro-v1:0","stream":true,"messages":[{"role":"user","content":"hello"}]}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	logOut := logBuf.String()
+	if got := strings.Count(logOut, "inference_done"); got != 1 {
+		t.Fatalf("expected one inference_done line, got %d logs=%q", got, logOut)
+	}
+	if !strings.Contains(logOut, "stream=true status=error") {
+		t.Fatalf("expected stream error inference_done line, got %q", logOut)
 	}
 }
 

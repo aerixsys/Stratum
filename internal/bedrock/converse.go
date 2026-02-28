@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/google/uuid"
-	"github.com/stratum/gateway/internal/logging"
 	"github.com/stratum/gateway/internal/schema"
 )
 
@@ -168,8 +167,6 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 
 	go func() {
 		defer close(dataCh)
-		startedAt := time.Now()
-		logging.StreamLog("stream_start", input.ModelID, 0, 0, nil)
 		emit := func(b []byte) bool {
 			return sendStreamChunk(ctx, dataCh, b)
 		}
@@ -191,10 +188,6 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 
 		out, err := c.BedrockRuntime.ConverseStream(ctx, streamInput)
 		if err != nil {
-			durationMs := time.Since(startedAt).Milliseconds()
-			logging.Warnf("stream setup failed for model=%s: %v", input.ModelID, err)
-			logging.StreamLog("stream_error", input.ModelID, 0, durationMs, map[string]any{"stage": "setup"})
-			logging.InferenceDone(input.ModelID, true, "error", durationMs, 0)
 			if !emitStreamErrorChunk(emit) {
 				return
 			}
@@ -206,10 +199,6 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 		now := time.Now().Unix()
 		stream := out.GetStream()
 		if stream == nil {
-			durationMs := time.Since(startedAt).Milliseconds()
-			logging.Warnf("stream setup returned nil stream for model=%s", input.ModelID)
-			logging.StreamLog("stream_error", input.ModelID, 0, durationMs, map[string]any{"stage": "nil_stream"})
-			logging.InferenceDone(input.ModelID, true, "error", durationMs, 0)
 			if !emitStreamErrorChunk(emit) {
 				return
 			}
@@ -218,7 +207,7 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 		}
 		defer stream.Close()
 
-		outcome := emitConverseSSEStream(
+		emitConverseSSEStream(
 			input,
 			msgID,
 			now,
@@ -226,17 +215,6 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 			stream.Err,
 			emit,
 		)
-		if outcome.status == "ok" {
-			logging.StreamLog("stream_done", input.ModelID, outcome.tokens, outcome.durationMs, nil)
-			logging.InferenceDone(input.ModelID, true, "ok", outcome.durationMs, int(outcome.tokens))
-			return
-		}
-		extra := map[string]any{}
-		if outcome.reason != "" {
-			extra["reason"] = outcome.reason
-		}
-		logging.StreamLog("stream_error", input.ModelID, outcome.tokens, outcome.durationMs, extra)
-		logging.InferenceDone(input.ModelID, true, "error", outcome.durationMs, int(outcome.tokens))
 	}()
 
 	return dataCh
@@ -249,13 +227,6 @@ type streamSSEState struct {
 	pendingUsage         *schema.Usage
 }
 
-type streamSSEOutcome struct {
-	status     string
-	reason     string
-	tokens     int64
-	durationMs int64
-}
-
 func emitConverseSSEStream(
 	input *ConverseInput,
 	msgID string,
@@ -263,45 +234,26 @@ func emitConverseSSEStream(
 	events <-chan brtypes.ConverseStreamOutput,
 	streamErr func() error,
 	emit func([]byte) bool,
-) streamSSEOutcome {
-	startedAt := time.Now()
-	outcome := streamSSEOutcome{status: "ok"}
-	finalize := func(status, reason string, state *streamSSEState) streamSSEOutcome {
-		tokens := int64(0)
-		if state != nil && state.pendingUsage != nil {
-			tokens = int64(state.pendingUsage.TotalTokens)
-			if tokens < 0 {
-				tokens = 0
-			}
-		}
-		return streamSSEOutcome{
-			status:     status,
-			reason:     reason,
-			tokens:     tokens,
-			durationMs: time.Since(startedAt).Milliseconds(),
-		}
-	}
-
+) {
 	if !emitRoleChunk(msgID, now, input.ModelID, emit) {
-		return finalize("error", "emit_role", nil)
+		return
 	}
 
 	state := &streamSSEState{}
 	for event := range events {
 		if !handleConverseStreamEvent(input, msgID, now, event, state, emit) {
-			return finalize("error", "emit_event", state)
+			return
 		}
 	}
 
 	if streamErr != nil {
 		if err := streamErr(); err != nil {
-			logging.Warnf("stream upstream error for model=%s: %v", input.ModelID, err)
 			if !state.finishChunkSent {
 				if !emitStreamErrorChunk(emit) {
-					return finalize("error", "emit_error_chunk", state)
+					return
 				}
 				_ = emitDone(emit)
-				return finalize("error", "upstream", state)
+				return
 			}
 		}
 	}
@@ -322,7 +274,7 @@ func emitConverseSSEStream(
 				FinishReason: &finishReason,
 			}},
 		}, emit) {
-			return finalize("error", "emit_finish", state)
+			return
 		}
 	}
 
@@ -335,13 +287,11 @@ func emitConverseSSEStream(
 			Choices: []schema.Choice{},
 			Usage:   state.pendingUsage,
 		}, emit) {
-			return finalize("error", "emit_usage", state)
+			return
 		}
 	}
 
 	_ = emitDone(emit)
-	outcome = finalize("ok", "", state)
-	return outcome
 }
 
 func handleConverseStreamEvent(

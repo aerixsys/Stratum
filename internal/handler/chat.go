@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -43,8 +46,16 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 }
 
 func (h *ChatHandler) handleSync(c *gin.Context, req *schema.ChatRequest) {
+	startedAt := time.Now()
+	status := "ok"
+	totalTokens := 0
+	defer func() {
+		logging.InferenceDone(req.Model, false, status, time.Since(startedAt).Milliseconds(), totalTokens)
+	}()
+
 	resp, err := h.svc.Converse(c.Request.Context(), req)
 	if err != nil {
+		status = "error"
 		if writeServiceError(c, err) {
 			return
 		}
@@ -52,22 +63,32 @@ func (h *ChatHandler) handleSync(c *gin.Context, req *schema.ChatRequest) {
 		schema.MapBedrockError(c, err)
 		return
 	}
+	if resp != nil && resp.Usage != nil && resp.Usage.TotalTokens > 0 {
+		totalTokens = resp.Usage.TotalTokens
+	}
 	c.JSON(http.StatusOK, resp)
 }
 
 func (h *ChatHandler) handleStream(c *gin.Context, req *schema.ChatRequest) {
-	start := time.Now()
+	startedAt := time.Now()
+	status := "ok"
+	totalTokens := 0
+	defer func() {
+		logging.InferenceDone(req.Model, true, status, time.Since(startedAt).Milliseconds(), totalTokens)
+	}()
+
 	logging.StreamLog("stream_start", req.Model, 0, 0, nil)
+	sawTerminalErrorChunk := false
 
 	dataCh, err := h.svc.ConverseStream(c.Request.Context(), req)
 	if err != nil {
+		status = "error"
 		if writeServiceError(c, err) {
 			return
 		}
-		durationMs := time.Since(start).Milliseconds()
+		durationMs := time.Since(startedAt).Milliseconds()
 		logging.Warnf("stream setup failed: %v", err)
 		logging.StreamLog("stream_error", req.Model, 0, durationMs, map[string]any{"stage": "setup"})
-		logging.InferenceDone(req.Model, true, "error", durationMs, 0)
 		schema.MapBedrockError(c, err)
 		return
 	}
@@ -80,10 +101,10 @@ func (h *ChatHandler) handleStream(c *gin.Context, req *schema.ChatRequest) {
 
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		durationMs := time.Since(start).Milliseconds()
+		status = "error"
+		durationMs := time.Since(startedAt).Milliseconds()
 		logging.Warnf("response writer does not support streaming flush")
 		logging.StreamLog("stream_error", req.Model, 0, durationMs, map[string]any{"stage": "flusher"})
-		logging.InferenceDone(req.Model, true, "error", durationMs, 0)
 		return
 	}
 	flusher.Flush()
@@ -91,25 +112,71 @@ func (h *ChatHandler) handleStream(c *gin.Context, req *schema.ChatRequest) {
 	for {
 		select {
 		case <-c.Request.Context().Done():
-			durationMs := time.Since(start).Milliseconds()
+			status = "error"
+			durationMs := time.Since(startedAt).Milliseconds()
 			logging.StreamLog("stream_error", req.Model, 0, durationMs, map[string]any{"stage": "client_disconnect"})
-			logging.InferenceDone(req.Model, true, "error", durationMs, 0)
 			return
 		case data, ok := <-dataCh:
 			if !ok {
-				durationMs := time.Since(start).Milliseconds()
-				logging.StreamLog("stream_done", req.Model, 0, durationMs, nil)
-				logging.InferenceDone(req.Model, true, "ok", durationMs, 0)
+				durationMs := time.Since(startedAt).Milliseconds()
+				if sawTerminalErrorChunk || status == "error" {
+					status = "error"
+					logging.StreamLog("stream_error", req.Model, int64(totalTokens), durationMs, map[string]any{"stage": "terminal_error"})
+				} else {
+					logging.StreamLog("stream_done", req.Model, int64(totalTokens), durationMs, nil)
+				}
 				return
 			}
+			parsedTokens, hasErrorChunk := parseStreamLogSignal(data)
+			if parsedTokens > 0 {
+				totalTokens = parsedTokens
+			}
+			if hasErrorChunk {
+				sawTerminalErrorChunk = true
+				status = "error"
+			}
 			if _, err := c.Writer.Write(data); err != nil {
-				durationMs := time.Since(start).Milliseconds()
+				status = "error"
+				durationMs := time.Since(startedAt).Milliseconds()
 				logging.Warnf("stream write failed: %v", err)
-				logging.StreamLog("stream_error", req.Model, 0, durationMs, map[string]any{"stage": "write"})
-				logging.InferenceDone(req.Model, true, "error", durationMs, 0)
+				logging.StreamLog("stream_error", req.Model, int64(totalTokens), durationMs, map[string]any{"stage": "write"})
 				return
 			}
 			flusher.Flush()
 		}
 	}
+}
+
+type streamSignalProbe struct {
+	Usage *struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
+	Error json.RawMessage `json:"error"`
+}
+
+func parseStreamLogSignal(chunk []byte) (tokens int, hasError bool) {
+	lines := strings.Split(string(chunk), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+
+		var probe streamSignalProbe
+		if err := json.Unmarshal([]byte(payload), &probe); err != nil {
+			continue
+		}
+		if probe.Usage != nil && probe.Usage.TotalTokens > 0 {
+			tokens = probe.Usage.TotalTokens
+		}
+		rawErr := bytes.TrimSpace(probe.Error)
+		if len(rawErr) > 0 && string(rawErr) != "null" {
+			hasError = true
+		}
+	}
+	return tokens, hasError
 }

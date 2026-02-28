@@ -78,7 +78,8 @@ Behavior notes:
 - Remote `image_url` fetches only allow `http/https` targets that resolve and connect to public IP space (private/local/reserved targets are blocked).
 - CORS returns `Access-Control-Allow-Origin: *` for all origins.
 - Logging is terminal-friendly: TTY output uses compact colorized lines; non-TTY output is plain timestamped text.
-- Access logs are debug-only (`LOG_LEVEL=debug`). At `info`, terminal output stays clean.
+- Access logs are debug-only (`LOG_LEVEL=debug`).
+- At `LOG_LEVEL=info`, chat inference routes emit one `inference_done` line per request (sync and stream), without access-log noise.
 
 Example:
 
