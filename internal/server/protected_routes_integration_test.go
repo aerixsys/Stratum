@@ -107,8 +107,7 @@ func buildProtectedTestRouterWithPolicy(cfg *config.Config, modelPolicy service.
 
 	router := gin.New()
 	router.Use(gin.Recovery())
-	router.Use(middleware.RequestID())
-	router.Use(requestLogger("error"))
+	router.Use(middleware.RequestContext(middleware.RequestContextOptions{AccessLogEnabled: false}))
 	router.Use(corsMiddleware())
 	router.Use(middleware.BodyLimit(cfg.MaxRequestBodyBytes))
 

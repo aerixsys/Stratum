@@ -85,3 +85,31 @@ func TestRun_ServerError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRun_LoggingConfigError(t *testing.T) {
+	oldLoadConfig := loadConfig
+	oldRunServer := runServer
+	defer func() {
+		loadConfig = oldLoadConfig
+		runServer = oldRunServer
+	}()
+
+	loadConfig = func() (*config.Config, error) {
+		return &config.Config{
+			Port:     "8000",
+			LogLevel: "invalid",
+		}, nil
+	}
+	runServer = func(cfg *config.Config) error {
+		t.Fatal("runServer should not be called when logging config fails")
+		return nil
+	}
+
+	err := run()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "logging") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

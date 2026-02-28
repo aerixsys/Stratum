@@ -1,15 +1,15 @@
 package server
 
 import (
-	"io"
+	"bytes"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stratum/gateway/internal/config"
+	"github.com/stratum/gateway/internal/logging"
 )
 
 func TestCorsMiddleware_AllowedOrigin(t *testing.T) {
@@ -145,40 +145,26 @@ func TestMetricsNoopAndDisabledHandler(t *testing.T) {
 	}
 }
 
-func TestRequestLoggerAndBanner(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+func TestPrintBanner(t *testing.T) {
+	var buf bytes.Buffer
+	logging.SetOutput(&buf)
+	logging.SetTTYMode(false)
+	defer func() {
+		logging.SetOutput(nil)
+		logging.SetTTYMode(false)
+	}()
 
-	r := gin.New()
-	r.Use(requestLogger("info"))
-	r.GET("/ok", func(c *gin.Context) {
-		c.Set("model", "m1")
-		c.Set("error_type", "")
-		c.Status(http.StatusOK)
-	})
-
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/ok", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-
-	// Exercise banner path for coverage and formatting regressions.
-	old := os.Stdout
-	rStdout, wStdout, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = wStdout
 	printBanner(&config.Config{
 		Port:      "8000",
 		AWSRegion: "us-east-1",
 		LogLevel:  "info",
 	})
-	_ = wStdout.Close()
-	os.Stdout = old
-	b, _ := io.ReadAll(rStdout)
-	_ = rStdout.Close()
-	if !strings.Contains(string(b), "Stratum Gateway") {
+
+	out := buf.String()
+	if !strings.Contains(out, "Stratum Gateway") {
 		t.Fatalf("expected banner content")
+	}
+	if !strings.Contains(out, "http://localhost:8000/v1") {
+		t.Fatalf("expected banner API line")
 	}
 }

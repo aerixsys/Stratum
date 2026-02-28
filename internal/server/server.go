@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +13,7 @@ import (
 	"github.com/stratum/gateway/internal/bedrock"
 	"github.com/stratum/gateway/internal/config"
 	"github.com/stratum/gateway/internal/handler"
+	"github.com/stratum/gateway/internal/logging"
 	"github.com/stratum/gateway/internal/middleware"
 	"github.com/stratum/gateway/internal/policy"
 	"github.com/stratum/gateway/internal/service"
@@ -43,7 +43,7 @@ func Run(cfg *config.Config) error {
 
 	// Pre-load models
 	if _, err := modelDiscovery.GetModels(context.Background()); err != nil {
-		log.Printf("[warn] Initial model discovery failed: %v", err)
+		logging.Warnf("initial model discovery failed: %v", err)
 	}
 
 	// Create services
@@ -60,8 +60,9 @@ func Run(cfg *config.Config) error {
 	}
 	router := gin.New()
 	router.Use(gin.Recovery())
-	router.Use(middleware.RequestID())
-	router.Use(requestLogger(cfg.LogLevel))
+	router.Use(middleware.RequestContext(middleware.RequestContextOptions{
+		AccessLogEnabled: cfg.LogLevel == "debug",
+	}))
 	router.Use(corsMiddleware())
 	router.Use(middleware.BodyLimit(cfg.MaxRequestBodyBytes))
 
@@ -118,28 +119,25 @@ func Run(cfg *config.Config) error {
 		return fmt.Errorf("server failed: %w", err)
 	}
 
-	log.Println("Shutting down...")
+	logging.Infof("shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Shutdown error: %v", err)
+		logging.Warnf("shutdown error: %v", err)
 	}
 
 	return nil
 }
 
 func printBanner(cfg *config.Config) {
-	fmt.Println()
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println("  Stratum Gateway")
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Printf("  Port:           %s\n", cfg.Port)
-	fmt.Printf("  Region:         %s\n", cfg.AWSRegion)
-	fmt.Printf("  Log Level:      %s\n", cfg.LogLevel)
-	fmt.Printf("  API:            http://localhost:%s/v1\n", cfg.Port)
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println()
+	logging.Banner([]string{
+		"Stratum Gateway",
+		fmt.Sprintf("Port:           %s", cfg.Port),
+		fmt.Sprintf("Region:         %s", cfg.AWSRegion),
+		fmt.Sprintf("Log Level:      %s", cfg.LogLevel),
+		fmt.Sprintf("API:            http://localhost:%s/v1", cfg.Port),
+	})
 }
 
 func corsMiddleware() gin.HandlerFunc {
@@ -154,28 +152,5 @@ func corsMiddleware() gin.HandlerFunc {
 			return
 		}
 		c.Next()
-	}
-}
-
-func requestLogger(level string) gin.HandlerFunc {
-	if level == "debug" {
-		return gin.Logger()
-	}
-	return func(c *gin.Context) {
-		start := time.Now()
-		c.Next()
-		latencyMs := time.Since(start).Milliseconds()
-		reqID := middleware.GetRequestID(c)
-		model, _ := c.Get("model")
-		errType, _ := c.Get("error_type")
-		log.Printf("request_id=%s method=%s path=%s status=%d latency_ms=%d model=%v error_type=%v",
-			reqID,
-			c.Request.Method,
-			c.Request.URL.Path,
-			c.Writer.Status(),
-			latencyMs,
-			model,
-			errType,
-		)
 	}
 }

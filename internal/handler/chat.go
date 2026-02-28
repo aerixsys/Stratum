@@ -2,10 +2,11 @@ package handler
 
 import (
 	"errors"
-	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stratum/gateway/internal/logging"
 	"github.com/stratum/gateway/internal/schema"
 	"github.com/stratum/gateway/internal/service"
 )
@@ -47,7 +48,7 @@ func (h *ChatHandler) handleSync(c *gin.Context, req *schema.ChatRequest) {
 		if writeServiceError(c, err) {
 			return
 		}
-		log.Printf("[chat] Converse error: %v", err)
+		logging.Errorf("chat converse failed: %v", err)
 		schema.MapBedrockError(c, err)
 		return
 	}
@@ -55,12 +56,18 @@ func (h *ChatHandler) handleSync(c *gin.Context, req *schema.ChatRequest) {
 }
 
 func (h *ChatHandler) handleStream(c *gin.Context, req *schema.ChatRequest) {
+	start := time.Now()
+	logging.StreamLog("stream_start", req.Model, 0, 0, nil)
+
 	dataCh, err := h.svc.ConverseStream(c.Request.Context(), req)
 	if err != nil {
 		if writeServiceError(c, err) {
 			return
 		}
-		log.Printf("[stream] ConverseStream setup error: %v", err)
+		durationMs := time.Since(start).Milliseconds()
+		logging.Warnf("stream setup failed: %v", err)
+		logging.StreamLog("stream_error", req.Model, 0, durationMs, map[string]any{"stage": "setup"})
+		logging.InferenceDone(req.Model, true, "error", durationMs, 0)
 		schema.MapBedrockError(c, err)
 		return
 	}
@@ -73,7 +80,10 @@ func (h *ChatHandler) handleStream(c *gin.Context, req *schema.ChatRequest) {
 
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		log.Printf("[stream] ResponseWriter does not support Flusher")
+		durationMs := time.Since(start).Milliseconds()
+		logging.Warnf("response writer does not support streaming flush")
+		logging.StreamLog("stream_error", req.Model, 0, durationMs, map[string]any{"stage": "flusher"})
+		logging.InferenceDone(req.Model, true, "error", durationMs, 0)
 		return
 	}
 	flusher.Flush()
@@ -81,13 +91,22 @@ func (h *ChatHandler) handleStream(c *gin.Context, req *schema.ChatRequest) {
 	for {
 		select {
 		case <-c.Request.Context().Done():
+			durationMs := time.Since(start).Milliseconds()
+			logging.StreamLog("stream_error", req.Model, 0, durationMs, map[string]any{"stage": "client_disconnect"})
+			logging.InferenceDone(req.Model, true, "error", durationMs, 0)
 			return
 		case data, ok := <-dataCh:
 			if !ok {
+				durationMs := time.Since(start).Milliseconds()
+				logging.StreamLog("stream_done", req.Model, 0, durationMs, nil)
+				logging.InferenceDone(req.Model, true, "ok", durationMs, 0)
 				return
 			}
 			if _, err := c.Writer.Write(data); err != nil {
-				log.Printf("[stream] write error: %v", err)
+				durationMs := time.Since(start).Milliseconds()
+				logging.Warnf("stream write failed: %v", err)
+				logging.StreamLog("stream_error", req.Model, 0, durationMs, map[string]any{"stage": "write"})
+				logging.InferenceDone(req.Model, true, "error", durationMs, 0)
 				return
 			}
 			flusher.Flush()

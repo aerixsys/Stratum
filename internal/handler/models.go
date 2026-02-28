@@ -1,10 +1,10 @@
 package handler
 
 import (
-	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stratum/gateway/internal/logging"
 	"github.com/stratum/gateway/internal/schema"
 	"github.com/stratum/gateway/internal/service"
 )
@@ -26,7 +26,7 @@ func (h *ModelsHandler) Handle(c *gin.Context) {
 		if writeServiceError(c, err) {
 			return
 		}
-		log.Printf("[models] list error: %v", err)
+		logging.Errorf("models list failed: %v", err)
 		schema.InternalError(c, "Failed to list models")
 		return
 	}
@@ -45,7 +45,7 @@ func (h *ModelsHandler) HandleGet(c *gin.Context) {
 		if writeServiceError(c, err) {
 			return
 		}
-		log.Printf("[models] get error: %v", err)
+		logging.Errorf("model get failed: %v", err)
 		schema.InternalError(c, "Failed to get model")
 		return
 	}

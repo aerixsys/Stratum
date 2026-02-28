@@ -3,7 +3,6 @@ package bedrock
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -60,7 +59,6 @@ func (mc *ModelCache) refresh(ctx context.Context) ([]schema.Model, error) {
 
 	mc.models = models
 	mc.loadedAt = time.Now()
-	log.Printf("[models] Discovered %d models", len(models))
 	return models, nil
 }
 

@@ -53,7 +53,7 @@ curl http://localhost:8000/v1/models -H "Authorization: Bearer <API_KEY>"
 | `AWS_ACCESS_KEY_ID` | no | none | Static AWS key (or use role-based credentials) |
 | `AWS_SECRET_ACCESS_KEY` | no | none | Static AWS secret (or use role-based credentials) |
 | `PORT` | no | `8000` | Listen port |
-| `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error` |
+| `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error` (`debug` enables access + stream debug logs) |
 | `ENABLE_METRICS` | no | `false` | Expose `/metrics` |
 | `MODEL_POLICY_PATH` | no | auto-resolve | Explicit model policy file path override |
 | `MAX_REQUEST_BODY_BYTES` | no | `10485760` | Body size limit |
@@ -77,6 +77,8 @@ Behavior notes:
 - Chat payload validation is strict. Unsupported message roles or malformed content shapes return `400` with `invalid_request_error`.
 - Remote `image_url` fetches only allow `http/https` targets that resolve and connect to public IP space (private/local/reserved targets are blocked).
 - CORS returns `Access-Control-Allow-Origin: *` for all origins.
+- Logging is terminal-friendly: TTY output uses compact colorized lines; non-TTY output is plain timestamped text.
+- Access logs are debug-only (`LOG_LEVEL=debug`). At `info`, terminal output stays clean.
 
 Example:
 
