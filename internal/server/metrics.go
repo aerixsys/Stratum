@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -64,12 +63,4 @@ func (m *metricsCollector) handler(c *gin.Context) {
 			count,
 		)
 	}
-}
-
-func metricsNoop() gin.HandlerFunc {
-	return func(c *gin.Context) { c.Next() }
-}
-
-func metricsRouteNotFound(c *gin.Context) {
-	c.JSON(http.StatusNotFound, gin.H{"error": "metrics disabled"})
 }

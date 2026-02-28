@@ -277,16 +277,38 @@ func TestEmitConverseSSEStream_SynthesizesFinishWhenMissing(t *testing.T) {
 	}
 }
 
+func TestEmitConverseSSEStream_StopsWhenEmitReturnsFalse(t *testing.T) {
+	input := &ConverseInput{ModelID: "amazon.nova-micro-v1:0"}
+	events := make(chan brtypes.ConverseStreamOutput, 1)
+	events <- &brtypes.ConverseStreamOutputMemberContentBlockDelta{
+		Value: brtypes.ContentBlockDeltaEvent{
+			ContentBlockIndex: aws.Int32(0),
+			Delta:             &brtypes.ContentBlockDeltaMemberText{Value: "hi"},
+		},
+	}
+	close(events)
+
+	calls := 0
+	emitConverseSSEStream(input, "chatcmpl-test", 1700000000, events, func() error { return nil }, func([]byte) bool {
+		calls++
+		return false
+	})
+	if calls != 1 {
+		t.Fatalf("expected emit to stop after first failed send, got %d calls", calls)
+	}
+}
+
 func collectSSEChunks(
 	input *ConverseInput,
 	events <-chan brtypes.ConverseStreamOutput,
 	streamErr func() error,
 ) [][]byte {
 	var chunks [][]byte
-	emitConverseSSEStream(input, "chatcmpl-test", 1700000000, events, streamErr, func(b []byte) {
+	emitConverseSSEStream(input, "chatcmpl-test", 1700000000, events, streamErr, func(b []byte) bool {
 		copied := make([]byte, len(b))
 		copy(copied, b)
 		chunks = append(chunks, copied)
+		return true
 	})
 	return chunks
 }

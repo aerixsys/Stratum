@@ -209,5 +209,15 @@ func TestModelCache_DiscoveryAndFind(t *testing.T) {
 	}
 }
 
+func TestSendStreamChunk_ContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ch := make(chan []byte, 1)
+	if ok := sendStreamChunk(ctx, ch, []byte("x")); ok {
+		t.Fatalf("expected sendStreamChunk to return false when context is canceled")
+	}
+}
+
 var _ bedrockAPI = (*fakeBedrockAPI)(nil)
 var _ bedrockRuntimeAPI = (*fakeRuntimeAPI)(nil)

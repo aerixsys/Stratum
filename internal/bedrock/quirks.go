@@ -14,24 +14,6 @@ func isClaude45Sampling(modelID string) bool {
 
 // ── Prompt Caching Quirks ──
 
-// cacheMinTokens returns the minimum tokens per cache checkpoint for a model.
-func cacheMinTokens(modelID string) int {
-	m := strings.ToLower(modelID)
-	switch {
-	case strings.Contains(m, "claude-opus-4-5"),
-		strings.Contains(m, "claude-haiku-4-5"):
-		return 4096
-	case strings.Contains(m, "claude-3-5-haiku"):
-		return 2048
-	case strings.Contains(m, "claude"):
-		return 1024 // Claude 3.7, Sonnet 4, Opus 4, etc.
-	case strings.Contains(m, "nova"):
-		return 1000
-	default:
-		return 1024
-	}
-}
-
 // supportsExtendedTTL returns true for models that support 1-hour cache TTL.
 func supportsExtendedTTL(modelID string) bool {
 	m := strings.ToLower(modelID)

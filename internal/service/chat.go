@@ -54,6 +54,9 @@ func (s *ChatService) buildInput(ctx context.Context, req *schema.ChatRequest) (
 	if len(req.Messages) == 0 {
 		return nil, badRequest("messages is required", nil)
 	}
+	if err := req.ValidateMessagesStrict(); err != nil {
+		return nil, badRequest(err.Error(), nil)
+	}
 	if strings.TrimSpace(req.ReasoningEffort) != "" {
 		return nil, badRequest("reasoning_effort is not supported; use reasoning.exclude and extra_body.additional_model_request_fields", nil)
 	}

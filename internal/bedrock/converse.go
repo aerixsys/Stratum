@@ -168,6 +168,9 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 
 	go func() {
 		defer close(dataCh)
+		emit := func(b []byte) bool {
+			return sendStreamChunk(ctx, dataCh, b)
+		}
 
 		streamInput := &bedrockruntime.ConverseStreamInput{
 			ModelId:  aws.String(input.ModelID),
@@ -186,8 +189,10 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 
 		out, err := c.BedrockRuntime.ConverseStream(ctx, streamInput)
 		if err != nil {
-			emitStreamErrorChunk(func(b []byte) { dataCh <- b })
-			emitDone(func(b []byte) { dataCh <- b })
+			if !emitStreamErrorChunk(emit) {
+				return
+			}
+			_ = emitDone(emit)
 			return
 		}
 
@@ -195,8 +200,10 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 		now := time.Now().Unix()
 		stream := out.GetStream()
 		if stream == nil {
-			emitStreamErrorChunk(func(b []byte) { dataCh <- b })
-			emitDone(func(b []byte) { dataCh <- b })
+			if !emitStreamErrorChunk(emit) {
+				return
+			}
+			_ = emitDone(emit)
 			return
 		}
 		defer stream.Close()
@@ -207,7 +214,7 @@ func (c *Client) ConverseStream(ctx context.Context, input *ConverseInput) <-cha
 			now,
 			stream.Events(),
 			stream.Err,
-			func(b []byte) { dataCh <- b },
+			emit,
 		)
 	}()
 
@@ -227,21 +234,27 @@ func emitConverseSSEStream(
 	now int64,
 	events <-chan brtypes.ConverseStreamOutput,
 	streamErr func() error,
-	emit func([]byte),
+	emit func([]byte) bool,
 ) {
-	emitRoleChunk(msgID, now, input.ModelID, emit)
+	if !emitRoleChunk(msgID, now, input.ModelID, emit) {
+		return
+	}
 
 	state := &streamSSEState{}
 	for event := range events {
-		handleConverseStreamEvent(input, msgID, now, event, state, emit)
+		if !handleConverseStreamEvent(input, msgID, now, event, state, emit) {
+			return
+		}
 	}
 
 	if streamErr != nil {
 		if err := streamErr(); err != nil {
 			log.Printf("[stream] Error: %v", err)
 			if !state.finishChunkSent {
-				emitStreamErrorChunk(emit)
-				emitDone(emit)
+				if !emitStreamErrorChunk(emit) {
+					return
+				}
+				_ = emitDone(emit)
 				return
 			}
 		}
@@ -252,7 +265,7 @@ func emitConverseSSEStream(
 		if finishReason == "" {
 			finishReason = "stop"
 		}
-		emitSSEValue(schema.ChatResponse{
+		if !emitSSEValue(schema.ChatResponse{
 			ID:      msgID,
 			Object:  "chat.completion.chunk",
 			Created: now,
@@ -262,21 +275,25 @@ func emitConverseSSEStream(
 				Delta:        &schema.ResponseMessage{},
 				FinishReason: &finishReason,
 			}},
-		}, emit)
+		}, emit) {
+			return
+		}
 	}
 
 	if state.pendingUsage != nil && input.IncludeUsage {
-		emitSSEValue(schema.ChatResponse{
+		if !emitSSEValue(schema.ChatResponse{
 			ID:      msgID,
 			Object:  "chat.completion.chunk",
 			Created: now,
 			Model:   input.ModelID,
 			Choices: []schema.Choice{},
 			Usage:   state.pendingUsage,
-		}, emit)
+		}, emit) {
+			return
+		}
 	}
 
-	emitDone(emit)
+	_ = emitDone(emit)
 }
 
 func handleConverseStreamEvent(
@@ -285,14 +302,14 @@ func handleConverseStreamEvent(
 	now int64,
 	event brtypes.ConverseStreamOutput,
 	state *streamSSEState,
-	emit func([]byte),
-) {
+	emit func([]byte) bool,
+) bool {
 	switch e := event.(type) {
 	case *brtypes.ConverseStreamOutputMemberContentBlockDelta:
 		delta := e.Value.Delta
 		switch d := delta.(type) {
 		case *brtypes.ContentBlockDeltaMemberText:
-			emitSSEValue(schema.ChatResponse{
+			if !emitSSEValue(schema.ChatResponse{
 				ID:      msgID,
 				Object:  "chat.completion.chunk",
 				Created: now,
@@ -301,12 +318,14 @@ func handleConverseStreamEvent(
 					Index: 0,
 					Delta: &schema.ResponseMessage{Content: aws.String(d.Value)},
 				}},
-			}, emit)
+			}, emit) {
+				return false
+			}
 		case *brtypes.ContentBlockDeltaMemberReasoningContent:
 			switch rd := d.Value.(type) {
 			case *brtypes.ReasoningContentBlockDeltaMemberText:
 				if !input.ReasoningExclude {
-					emitSSEValue(schema.ChatResponse{
+					if !emitSSEValue(schema.ChatResponse{
 						ID:      msgID,
 						Object:  "chat.completion.chunk",
 						Created: now,
@@ -315,11 +334,13 @@ func handleConverseStreamEvent(
 							Index: 0,
 							Delta: &schema.ResponseMessage{Reasoning: aws.String(rd.Value)},
 						}},
-					}, emit)
+					}, emit) {
+						return false
+					}
 				}
 			case *brtypes.ReasoningContentBlockDeltaMemberSignature:
 				if !input.ReasoningExclude {
-					emitSSEValue(schema.ChatResponse{
+					if !emitSSEValue(schema.ChatResponse{
 						ID:      msgID,
 						Object:  "chat.completion.chunk",
 						Created: now,
@@ -328,14 +349,16 @@ func handleConverseStreamEvent(
 							Index: 0,
 							Delta: &schema.ResponseMessage{ReasoningSignature: aws.String(rd.Value)},
 						}},
-					}, emit)
+					}, emit) {
+						return false
+					}
 				}
 			case *brtypes.ReasoningContentBlockDeltaMemberRedactedContent:
 				_ = rd
 			}
 		case *brtypes.ContentBlockDeltaMemberToolUse:
 			idx := state.currentToolCallIndex
-			emitSSEValue(schema.ChatResponse{
+			if !emitSSEValue(schema.ChatResponse{
 				ID:      msgID,
 				Object:  "chat.completion.chunk",
 				Created: now,
@@ -352,13 +375,15 @@ func handleConverseStreamEvent(
 						}},
 					},
 				}},
-			}, emit)
+			}, emit) {
+				return false
+			}
 		}
 	case *brtypes.ConverseStreamOutputMemberContentBlockStart:
 		start := e.Value.Start
 		if tu, ok := start.(*brtypes.ContentBlockStartMemberToolUse); ok {
 			idx := state.currentToolCallIndex
-			emitSSEValue(schema.ChatResponse{
+			if !emitSSEValue(schema.ChatResponse{
 				ID:      msgID,
 				Object:  "chat.completion.chunk",
 				Created: now,
@@ -376,12 +401,14 @@ func handleConverseStreamEvent(
 						}},
 					},
 				}},
-			}, emit)
+			}, emit) {
+				return false
+			}
 			state.currentToolCallIndex++
 		}
 	case *brtypes.ConverseStreamOutputMemberMessageStop:
 		state.finishReason = MapStopReason(e.Value.StopReason)
-		emitSSEValue(schema.ChatResponse{
+		if !emitSSEValue(schema.ChatResponse{
 			ID:      msgID,
 			Object:  "chat.completion.chunk",
 			Created: now,
@@ -391,18 +418,21 @@ func handleConverseStreamEvent(
 				Delta:        &schema.ResponseMessage{},
 				FinishReason: &state.finishReason,
 			}},
-		}, emit)
+		}, emit) {
+			return false
+		}
 		state.finishChunkSent = true
 	case *brtypes.ConverseStreamOutputMemberMetadata:
 		if !input.IncludeUsage || e.Value.Usage == nil {
-			return
+			return true
 		}
 		state.pendingUsage = buildUsageFromTokenUsage(e.Value.Usage)
 	}
+	return true
 }
 
-func emitRoleChunk(msgID string, now int64, modelID string, emit func([]byte)) {
-	emitSSEValue(schema.ChatResponse{
+func emitRoleChunk(msgID string, now int64, modelID string, emit func([]byte) bool) bool {
+	return emitSSEValue(schema.ChatResponse{
 		ID:      msgID,
 		Object:  "chat.completion.chunk",
 		Created: now,
@@ -416,24 +446,36 @@ func emitRoleChunk(msgID string, now int64, modelID string, emit func([]byte)) {
 	}, emit)
 }
 
-func emitSSEValue(v interface{}, emit func([]byte)) {
+func emitSSEValue(v interface{}, emit func([]byte) bool) bool {
 	data, err := marshalSSE(v)
 	if err != nil {
-		return
+		return false
 	}
-	emit(data)
+	return emit(data)
 }
 
-func emitStreamErrorChunk(emit func([]byte)) {
-	emitSSEValue(map[string]any{
+func emitStreamErrorChunk(emit func([]byte) bool) bool {
+	return emitSSEValue(map[string]any{
 		"error": map[string]string{
 			"message": "Upstream model invocation failed",
 		},
 	}, emit)
 }
 
-func emitDone(emit func([]byte)) {
-	emit([]byte("data: [DONE]\n\n"))
+func emitDone(emit func([]byte) bool) bool {
+	return emit([]byte("data: [DONE]\n\n"))
+}
+
+func sendStreamChunk(ctx context.Context, out chan<- []byte, chunk []byte) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case out <- chunk:
+		return true
+	}
 }
 
 func buildUsageFromTokenUsage(usage *brtypes.TokenUsage) *schema.Usage {

@@ -300,6 +300,37 @@ func TestProtectedRoutes_ModelRequired(t *testing.T) {
 	}
 }
 
+func TestProtectedRoutes_InvalidMessageShape(t *testing.T) {
+	cfg := &config.Config{
+		APIKey:              "test-key",
+		MaxRequestBodyBytes: 1024 * 1024,
+	}
+	router := buildProtectedTestRouter(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"amazon.nova-micro-v1:0","messages":[{"role":"moderator","content":"hello"}]}`,
+	))
+	req.RemoteAddr = "203.0.113.17:4444"
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid message shape, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	assertErrorType(t, rr.Body.Bytes(), "invalid_request_error")
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("expected valid JSON envelope, got err=%v body=%s", err, rr.Body.String())
+	}
+	errObj, _ := parsed["error"].(map[string]interface{})
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, `messages[0].role "moderator" is not supported`) {
+		t.Fatalf("unexpected validation message: %q", msg)
+	}
+}
+
 func TestProtectedRoutes_ModelPolicyBlocksAcrossEndpoints(t *testing.T) {
 	cfg := &config.Config{
 		APIKey:              "test-key",

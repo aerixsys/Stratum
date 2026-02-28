@@ -12,7 +12,7 @@ import (
 	"github.com/stratum/gateway/internal/config"
 )
 
-func TestCorsMiddleware_WildcardOrigin(t *testing.T) {
+func TestCorsMiddleware_AllowedOrigin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(corsMiddleware())
@@ -20,6 +20,43 @@ func TestCorsMiddleware_WildcardOrigin(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/ok", nil)
 	req.Header.Set("Origin", "https://example.com")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if rr.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("expected wildcard allow-origin")
+	}
+}
+
+func TestCorsMiddleware_AnyOriginGetsHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(corsMiddleware())
+	r.GET("/ok", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	req := httptest.NewRequest(http.MethodGet, "/ok", nil)
+	req.Header.Set("Origin", "https://blocked.example")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if rr.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("expected wildcard allow-origin")
+	}
+}
+
+func TestCorsMiddleware_NoOriginHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(corsMiddleware())
+	r.GET("/ok", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	req := httptest.NewRequest(http.MethodGet, "/ok", nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -89,9 +126,11 @@ func TestMetricsNoopAndDisabledHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
-	r.Use(metricsNoop())
+	r.Use(func(c *gin.Context) { c.Next() })
 	r.GET("/ok", func(c *gin.Context) { c.Status(http.StatusOK) })
-	r.GET("/metrics", metricsRouteNotFound)
+	r.GET("/metrics", func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "metrics disabled"})
+	})
 
 	okRR := httptest.NewRecorder()
 	r.ServeHTTP(okRR, httptest.NewRequest(http.MethodGet, "/ok", nil))

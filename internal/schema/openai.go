@@ -30,6 +30,14 @@ var allowedExtraBodyFields = map[string]struct{}{
 	"additional_model_request_fields": {},
 }
 
+var allowedMessageRoles = map[string]struct{}{
+	"system":    {},
+	"developer": {},
+	"user":      {},
+	"assistant": {},
+	"tool":      {},
+}
+
 type Reasoning struct {
 	Exclude *bool `json:"exclude,omitempty"`
 
@@ -126,6 +134,70 @@ func (r *ChatRequest) ValidateExtraBodyCoreOnly() error {
 		"unsupported extra_body fields (%s); only prompt_caching and additional_model_request_fields are supported",
 		strings.Join(unsupported, ", "),
 	)
+}
+
+// ValidateMessagesStrict validates message roles and content structure.
+func (r *ChatRequest) ValidateMessagesStrict() error {
+	for i := range r.Messages {
+		msg := r.Messages[i]
+		rawRole := msg.Role
+		role := strings.TrimSpace(rawRole)
+		if role == "" {
+			return fmt.Errorf("messages[%d].role is required", i)
+		}
+		if rawRole != role {
+			return fmt.Errorf("messages[%d].role must not contain surrounding whitespace", i)
+		}
+		if _, ok := allowedMessageRoles[role]; !ok {
+			return fmt.Errorf("messages[%d].role %q is not supported", i, role)
+		}
+
+		switch role {
+		case "tool":
+			if strings.TrimSpace(msg.ToolCallID) == "" {
+				return fmt.Errorf("messages[%d].tool_call_id is required for tool role", i)
+			}
+		case "user":
+			if err := validateUserContentStrict(msg.Content, i); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateUserContentStrict(content json.RawMessage, msgIndex int) error {
+	if len(content) == 0 {
+		return fmt.Errorf("messages[%d].content must be a string or an array of content parts", msgIndex)
+	}
+
+	var asString string
+	if err := json.Unmarshal(content, &asString); err == nil {
+		return nil
+	}
+
+	var parts []ContentPart
+	if err := json.Unmarshal(content, &parts); err != nil {
+		return fmt.Errorf("messages[%d].content must be a string or an array of content parts", msgIndex)
+	}
+
+	for i, part := range parts {
+		partType := strings.TrimSpace(part.Type)
+		switch partType {
+		case "text":
+			// text is optional and may be empty.
+		case "image_url":
+			if part.ImageURL == nil || strings.TrimSpace(part.ImageURL.URL) == "" {
+				return fmt.Errorf("messages[%d].content[%d].image_url.url is required", msgIndex, i)
+			}
+		case "":
+			return fmt.Errorf("messages[%d].content[%d].type is required", msgIndex, i)
+		default:
+			return fmt.Errorf("messages[%d].content[%d].type %q is not supported", msgIndex, i, partType)
+		}
+	}
+
+	return nil
 }
 
 // ParseExtraBody extracts supported extra_body fields.

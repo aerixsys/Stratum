@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"errors"
-	"net/http"
+	"net"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +67,7 @@ func TestRun_GracefulShutdown(t *testing.T) {
 		APIKey:              "sk-test",
 		AWSRegion:           "us-east-1",
 		MaxRequestBodyBytes: 1024 * 1024,
+		ModelPolicyPath:     testModelPolicyPath(t),
 	}
 
 	if err := Run(cfg); err != nil {
@@ -85,6 +89,7 @@ func TestRun_BedrockClientError(t *testing.T) {
 		APIKey:              "sk-test",
 		AWSRegion:           "us-east-1",
 		MaxRequestBodyBytes: 1024 * 1024,
+		ModelPolicyPath:     testModelPolicyPath(t),
 	}
 
 	err := Run(cfg)
@@ -92,6 +97,51 @@ func TestRun_BedrockClientError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	if !strings.Contains(err.Error(), "bedrock client") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRun_ServerListenError(t *testing.T) {
+	oldNewClient := newBedrockClient
+	oldNotify := notifyContext
+	defer func() {
+		newBedrockClient = oldNewClient
+		notifyContext = oldNotify
+	}()
+
+	newBedrockClient = func(cfg *config.Config) (*gatewaybedrock.Client, error) {
+		return &gatewaybedrock.Client{
+			Bedrock:        &stubBedrockAPI{},
+			BedrockRuntime: &stubRuntimeAPI{},
+			Config:         cfg,
+		}, nil
+	}
+	notifyContext = func(parent context.Context, signals ...os.Signal) (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(parent)
+		return ctx, cancel
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	cfg := &config.Config{
+		Port:                strconv.Itoa(port),
+		LogLevel:            "error",
+		APIKey:              "sk-test",
+		AWSRegion:           "us-east-1",
+		MaxRequestBodyBytes: 1024 * 1024,
+		ModelPolicyPath:     testModelPolicyPath(t),
+	}
+
+	err = Run(cfg)
+	if err == nil {
+		t.Fatal("expected listen error")
+	}
+	if !strings.Contains(err.Error(), "server failed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -105,4 +155,12 @@ var _ interface {
 	ListFoundationModels(ctx context.Context, params *awssdkbedrock.ListFoundationModelsInput, optFns ...func(*awssdkbedrock.Options)) (*awssdkbedrock.ListFoundationModelsOutput, error)
 } = (*stubBedrockAPI)(nil)
 
-var _ = http.MethodGet
+func testModelPolicyPath(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	return filepath.Join(root, "config", "model-policy.yaml")
+}

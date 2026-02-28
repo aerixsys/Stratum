@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -16,19 +17,26 @@ type Config struct {
 	AWSRegion           string
 	MaxRequestBodyBytes int64
 	EnableMetrics       bool
+	ModelPolicyPath     string
 }
 
 // Load reads configuration from .env and environment variables.
 func Load() (*Config, error) {
 	_ = godotenv.Load() // ignore if .env missing
 
+	maxRequestBodyBytes, err := envInt64("MAX_REQUEST_BODY_BYTES", 10*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		Port:                envOr("PORT", "8000"),
 		LogLevel:            strings.ToLower(envOr("LOG_LEVEL", "info")),
 		APIKey:              strings.TrimSpace(os.Getenv("API_KEY")),
 		AWSRegion:           envOr("AWS_REGION", "us-east-1"),
-		MaxRequestBodyBytes: int64(envInt("MAX_REQUEST_BODY_BYTES", 10*1024*1024)),
+		MaxRequestBodyBytes: maxRequestBodyBytes,
 		EnableMetrics:       envBool("ENABLE_METRICS", false),
+		ModelPolicyPath:     strings.TrimSpace(os.Getenv("MODEL_POLICY_PATH")),
 	}
 
 	if cfg.APIKey == "" {
@@ -63,15 +71,14 @@ func envBool(key string, fallback bool) bool {
 	return v == "true" || v == "1" || v == "yes"
 }
 
-func envInt(key string, fallback int) int {
+func envInt64(key string, fallback int64) (int64, error) {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
-		return fallback
+		return fallback, nil
 	}
-	var out int
-	_, err := fmt.Sscanf(v, "%d", &out)
+	out, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return fallback
+		return 0, fmt.Errorf("invalid %s %q: must be an integer", key, v)
 	}
-	return out
+	return out, nil
 }

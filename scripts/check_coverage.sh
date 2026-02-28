@@ -10,11 +10,15 @@ TRANSLATE_MIN=85
 
 cleanup() {
   rm -f service.cover
+  rm -f "${full_log:-}" "${service_log:-}"
 }
 trap cleanup EXIT
 
+full_log="$(mktemp /tmp/stratum.cover.XXXXXX.log)"
+service_log="$(mktemp /tmp/stratum.service.cover.XXXXXX.log)"
+
 echo "[coverage] running full test coverage profile"
-go test ./... -coverprofile=cover.out >/tmp/stratum.cover.log
+go test ./... -coverprofile=cover.out >"$full_log"
 
 overall_pct="$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')"
 translate_pct="$(go tool cover -func=cover.out | awk '/TranslateRequest/ {gsub("%","",$3); print $3; exit}')"
@@ -25,7 +29,7 @@ if [[ -z "${translate_pct}" ]]; then
 fi
 
 echo "[coverage] running service package coverage profile"
-go test ./internal/service -coverprofile=service.cover >/tmp/stratum.service.cover.log
+go test ./internal/service -coverprofile=service.cover >"$service_log"
 service_pct="$(go tool cover -func=service.cover | awk '/^total:/ {gsub("%","",$3); print $3}')"
 
 printf '[coverage] overall=%.1f%% (min=%s%%)\n' "$overall_pct" "$OVERALL_MIN"

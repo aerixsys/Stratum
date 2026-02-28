@@ -26,7 +26,7 @@ var (
 
 // Run starts the Stratum server.
 func Run(cfg *config.Config) error {
-	modelPolicy, err := policy.LoadDefaultModelPolicy()
+	modelPolicy, err := policy.LoadDefaultModelPolicy(cfg.ModelPolicyPath)
 	if err != nil {
 		return fmt.Errorf("model policy: %w", err)
 	}
@@ -100,15 +100,24 @@ func Run(cfg *config.Config) error {
 	// Graceful shutdown
 	ctx, stop := notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	serveErrCh := make(chan error, 1)
 
 	go func() {
 		printBanner(cfg)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
+			select {
+			case serveErrCh <- err:
+			default:
+			}
 		}
 	}()
 
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case err := <-serveErrCh:
+		return fmt.Errorf("server failed: %w", err)
+	}
+
 	log.Println("Shutting down...")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

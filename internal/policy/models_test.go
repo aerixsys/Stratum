@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -77,6 +78,25 @@ func TestLoadModelPolicy_Errors(t *testing.T) {
 	})
 }
 
+func TestLoadDefaultModelPolicy_ExplicitPath(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "model-policy.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nexclude: [\"anthropic.*\"]\n"), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	p, err := LoadDefaultModelPolicy(path)
+	if err != nil {
+		t.Fatalf("LoadDefaultModelPolicy() error = %v", err)
+	}
+	if p.FilePath() != path {
+		t.Fatalf("FilePath() = %q, want %q", p.FilePath(), path)
+	}
+	if !p.IsBlocked("anthropic.claude-3-sonnet") {
+		t.Fatalf("expected wildcard block match")
+	}
+}
+
 func TestModelPolicy_IsBlocked(t *testing.T) {
 	p := &ModelPolicy{
 		exclude: []string{
@@ -108,34 +128,137 @@ func TestModelPolicy_IsBlocked(t *testing.T) {
 	}
 }
 
-func TestResolveDefaultPolicyPath(t *testing.T) {
+func TestResolveDefaultPolicyPath_ExplicitPriority(t *testing.T) {
 	tmp := t.TempDir()
-	repo := filepath.Join(tmp, "repo")
-	if err := os.MkdirAll(filepath.Join(repo, "config"), 0o755); err != nil {
-		t.Fatalf("mkdir config: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(repo, "internal", "server"), 0o755); err != nil {
-		t.Fatalf("mkdir nested: %v", err)
-	}
-	policyPath := filepath.Join(repo, "config", "model-policy.yaml")
-	if err := os.WriteFile(policyPath, []byte("version: 1\nexclude: [\"anthropic.*\"]\n"), 0o600); err != nil {
-		t.Fatalf("write policy: %v", err)
+	explicitPath := filepath.Join(tmp, "explicit-model-policy.yaml")
+	if err := os.WriteFile(explicitPath, []byte("version: 1\nexclude: []\n"), 0o600); err != nil {
+		t.Fatalf("write explicit policy: %v", err)
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
+	execDir := filepath.Join(tmp, "exec")
+	execPolicyPath := filepath.Join(execDir, "config", "model-policy.yaml")
+	if err := os.MkdirAll(filepath.Dir(execPolicyPath), 0o755); err != nil {
+		t.Fatalf("mkdir exec config: %v", err)
 	}
-	defer func() { _ = os.Chdir(cwd) }()
-	if err := os.Chdir(filepath.Join(repo, "internal", "server")); err != nil {
-		t.Fatalf("chdir: %v", err)
+	if err := os.WriteFile(execPolicyPath, []byte("version: 1\nexclude: []\n"), 0o600); err != nil {
+		t.Fatalf("write exec policy: %v", err)
 	}
 
-	resolved, err := ResolveDefaultPolicyPath()
+	cwdDir := filepath.Join(tmp, "cwd")
+	cwdPolicyPath := filepath.Join(cwdDir, "config", "model-policy.yaml")
+	if err := os.MkdirAll(filepath.Dir(cwdPolicyPath), 0o755); err != nil {
+		t.Fatalf("mkdir cwd config: %v", err)
+	}
+	if err := os.WriteFile(cwdPolicyPath, []byte("version: 1\nexclude: []\n"), 0o600); err != nil {
+		t.Fatalf("write cwd policy: %v", err)
+	}
+
+	oldExec := getExecutablePath
+	oldWD := getWorkingDir
+	defer func() {
+		getExecutablePath = oldExec
+		getWorkingDir = oldWD
+	}()
+	getExecutablePath = func() (string, error) { return filepath.Join(execDir, "stratum"), nil }
+	getWorkingDir = func() (string, error) { return cwdDir, nil }
+
+	resolved, err := ResolveDefaultPolicyPath(explicitPath)
 	if err != nil {
 		t.Fatalf("ResolveDefaultPolicyPath() error = %v", err)
 	}
-	if resolved != policyPath {
-		t.Fatalf("resolved path = %q, want %q", resolved, policyPath)
+	if resolved != explicitPath {
+		t.Fatalf("resolved path = %q, want %q", resolved, explicitPath)
+	}
+}
+
+func TestResolveDefaultPolicyPath_ExecutableFallback(t *testing.T) {
+	tmp := t.TempDir()
+	execDir := filepath.Join(tmp, "exec")
+	execPolicyPath := filepath.Join(execDir, "config", "model-policy.yaml")
+	if err := os.MkdirAll(filepath.Dir(execPolicyPath), 0o755); err != nil {
+		t.Fatalf("mkdir exec config: %v", err)
+	}
+	if err := os.WriteFile(execPolicyPath, []byte("version: 1\nexclude: []\n"), 0o600); err != nil {
+		t.Fatalf("write exec policy: %v", err)
+	}
+
+	cwdDir := filepath.Join(tmp, "cwd")
+	if err := os.MkdirAll(cwdDir, 0o755); err != nil {
+		t.Fatalf("mkdir cwd dir: %v", err)
+	}
+
+	oldExec := getExecutablePath
+	oldWD := getWorkingDir
+	defer func() {
+		getExecutablePath = oldExec
+		getWorkingDir = oldWD
+	}()
+	getExecutablePath = func() (string, error) { return filepath.Join(execDir, "stratum"), nil }
+	getWorkingDir = func() (string, error) { return cwdDir, nil }
+
+	resolved, err := ResolveDefaultPolicyPath("")
+	if err != nil {
+		t.Fatalf("ResolveDefaultPolicyPath() error = %v", err)
+	}
+	if resolved != execPolicyPath {
+		t.Fatalf("resolved path = %q, want %q", resolved, execPolicyPath)
+	}
+}
+
+func TestResolveDefaultPolicyPath_CWDFallback(t *testing.T) {
+	tmp := t.TempDir()
+	cwdDir := filepath.Join(tmp, "cwd")
+	cwdPolicyPath := filepath.Join(cwdDir, "config", "model-policy.yaml")
+	if err := os.MkdirAll(filepath.Dir(cwdPolicyPath), 0o755); err != nil {
+		t.Fatalf("mkdir cwd config: %v", err)
+	}
+	if err := os.WriteFile(cwdPolicyPath, []byte("version: 1\nexclude: []\n"), 0o600); err != nil {
+		t.Fatalf("write cwd policy: %v", err)
+	}
+
+	oldExec := getExecutablePath
+	oldWD := getWorkingDir
+	defer func() {
+		getExecutablePath = oldExec
+		getWorkingDir = oldWD
+	}()
+	getExecutablePath = func() (string, error) { return "", os.ErrNotExist }
+	getWorkingDir = func() (string, error) { return cwdDir, nil }
+
+	resolved, err := ResolveDefaultPolicyPath("")
+	if err != nil {
+		t.Fatalf("ResolveDefaultPolicyPath() error = %v", err)
+	}
+	if resolved != cwdPolicyPath {
+		t.Fatalf("resolved path = %q, want %q", resolved, cwdPolicyPath)
+	}
+}
+
+func TestResolveDefaultPolicyPath_NotFound(t *testing.T) {
+	tmp := t.TempDir()
+	execDir := filepath.Join(tmp, "exec")
+	cwdDir := filepath.Join(tmp, "cwd")
+	if err := os.MkdirAll(execDir, 0o755); err != nil {
+		t.Fatalf("mkdir exec dir: %v", err)
+	}
+	if err := os.MkdirAll(cwdDir, 0o755); err != nil {
+		t.Fatalf("mkdir cwd dir: %v", err)
+	}
+
+	oldExec := getExecutablePath
+	oldWD := getWorkingDir
+	defer func() {
+		getExecutablePath = oldExec
+		getWorkingDir = oldWD
+	}()
+	getExecutablePath = func() (string, error) { return filepath.Join(execDir, "stratum"), nil }
+	getWorkingDir = func() (string, error) { return cwdDir, nil }
+
+	_, err := ResolveDefaultPolicyPath(filepath.Join(tmp, "missing.yaml"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := err.Error(); !strings.Contains(got, "tried:") {
+		t.Fatalf("expected tried paths in error, got %q", got)
 	}
 }

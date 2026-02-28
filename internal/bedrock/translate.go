@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -240,19 +242,24 @@ func parseUserContent(msg schema.Message) ([]brtypes.ContentBlock, error) {
 	}
 
 	var blocks []brtypes.ContentBlock
-	for _, part := range parts {
-		switch part.Type {
+	for i, part := range parts {
+		partType := strings.TrimSpace(part.Type)
+		switch partType {
 		case "text":
 			blocks = append(blocks, &brtypes.ContentBlockMemberText{Value: part.Text})
 		case "image_url":
-			if part.ImageURL == nil {
-				continue
+			if part.ImageURL == nil || strings.TrimSpace(part.ImageURL.URL) == "" {
+				return nil, fmt.Errorf("user content[%d].image_url.url is required", i)
 			}
 			imgBlock, err := parseImageURL(part.ImageURL.URL)
 			if err != nil {
 				return nil, err
 			}
 			blocks = append(blocks, imgBlock)
+		case "":
+			return nil, fmt.Errorf("user content[%d].type is required", i)
+		default:
+			return nil, fmt.Errorf("user content[%d].type %q is not supported", i, partType)
 		}
 	}
 	return blocks, nil
@@ -309,8 +316,30 @@ func parseImageURLWithOptions(urlStr string, opts imageFetchOptions) (brtypes.Co
 		}
 	}
 
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: 30 * time.Second,
+	}
+	if !opts.allowPrivate {
+		dialer.ControlContext = func(ctx context.Context, network, address string, _ syscall.RawConn) error {
+			if err := validateImageDialAddress(address); err != nil {
+				return fmt.Errorf("fetch image: dial target blocked: %w", err)
+			}
+			return nil
+		}
+	}
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           dialer.DialContext,
+		ResponseHeaderTimeout: timeout,
+		TLSHandshakeTimeout:   timeout,
+		ExpectContinueTimeout: time.Second,
+	}
+	defer transport.CloseIdleConnections()
+
 	client := &http.Client{
-		Timeout: timeout,
+		Timeout:   timeout,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxImageRedirects {
 				return fmt.Errorf("fetch image: too many redirects")
@@ -418,15 +447,50 @@ func validateRemoteImageHost(host string) error {
 	return nil
 }
 
+func validateImageDialAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid dial address %q", address)
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return fmt.Errorf("dial target host is empty")
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			return fmt.Errorf("resolve dial host: %w", err)
+		}
+		for _, resolved := range ips {
+			if isPrivateOrLocalIP(resolved) {
+				return fmt.Errorf("dial target resolves to private or local address")
+			}
+		}
+		return nil
+	}
+
+	if isPrivateOrLocalIP(ip) {
+		return fmt.Errorf("dial target is private or local address")
+	}
+	return nil
+}
+
 func isPrivateOrLocalIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	if ip.IsLoopback() ||
+		ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsPrivate() {
 		return true
 	}
 	if v4 := ip.To4(); v4 != nil {
-		if v4[0] == 10 {
+		if v4[0] == 0 || v4[0] == 10 {
 			return true
 		}
 		if v4[0] == 172 && v4[1] >= 16 && v4[1] <= 31 {
@@ -438,10 +502,31 @@ func isPrivateOrLocalIP(ip net.IP) bool {
 		if v4[0] == 169 && v4[1] == 254 {
 			return true
 		}
+		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+			return true
+		}
+		if v4[0] == 192 && v4[1] == 0 && v4[2] == 0 {
+			return true
+		}
+		if v4[0] == 192 && v4[1] == 0 && v4[2] == 2 {
+			return true
+		}
+		if v4[0] == 198 && (v4[1] == 18 || v4[1] == 19) {
+			return true
+		}
+		if v4[0] == 198 && v4[1] == 51 && v4[2] == 100 {
+			return true
+		}
+		if v4[0] == 203 && v4[1] == 0 && v4[2] == 113 {
+			return true
+		}
+		if v4[0] >= 240 {
+			return true
+		}
 	}
-	if len(ip) == net.IPv6len {
-		// Unique local and link-local prefixes.
-		if (ip[0]&0xfe) == 0xfc || (ip[0] == 0xfe && (ip[1]&0xc0) == 0x80) {
+	if v6 := ip.To16(); v6 != nil && ip.To4() == nil {
+		// Documentation / reserved IPv6 ranges.
+		if v6[0] == 0x20 && v6[1] == 0x01 && v6[2] == 0x0d && v6[3] == 0xb8 {
 			return true
 		}
 	}

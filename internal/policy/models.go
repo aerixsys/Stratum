@@ -14,6 +14,11 @@ const (
 	defaultPolicyRelativePath   = "config/model-policy.yaml"
 )
 
+var (
+	getExecutablePath = os.Executable
+	getWorkingDir     = os.Getwd
+)
+
 type modelPolicyFile struct {
 	Version int      `yaml:"version"`
 	Exclude []string `yaml:"exclude"`
@@ -26,25 +31,60 @@ type ModelPolicy struct {
 	filePath string
 }
 
-// LoadDefaultModelPolicy loads config/model-policy.yaml by searching upward from the cwd.
-func LoadDefaultModelPolicy() (*ModelPolicy, error) {
-	path, err := ResolveDefaultPolicyPath()
+// LoadDefaultModelPolicy resolves and loads the default model policy file.
+func LoadDefaultModelPolicy(configuredPath string) (*ModelPolicy, error) {
+	path, err := ResolveDefaultPolicyPath(configuredPath)
 	if err != nil {
 		return nil, err
 	}
 	return LoadModelPolicy(path)
 }
 
-// ResolveDefaultPolicyPath finds config/model-policy.yaml by walking up from the cwd.
-func ResolveDefaultPolicyPath() (string, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("resolve cwd: %w", err)
+// ResolveDefaultPolicyPath resolves the policy path in deterministic order:
+// 1) explicit path, 2) executable-relative config/model-policy.yaml, 3) cwd-local config/model-policy.yaml.
+func ResolveDefaultPolicyPath(configuredPath string) (string, error) {
+	candidates := make([]string, 0, 3)
+	seen := make(map[string]struct{})
+	addCandidate := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if _, exists := seen[p]; exists {
+			return
+		}
+		seen[p] = struct{}{}
+		candidates = append(candidates, p)
 	}
 
-	cur := wd
-	for {
-		candidate := filepath.Join(cur, defaultPolicyRelativePath)
+	addCandidate(configuredPath)
+
+	execPath, execErr := getExecutablePath()
+	if execErr == nil {
+		addCandidate(filepath.Join(filepath.Dir(execPath), defaultPolicyRelativePath))
+	}
+
+	wd, wdErr := getWorkingDir()
+	if wdErr == nil {
+		addCandidate(filepath.Join(wd, defaultPolicyRelativePath))
+	}
+
+	if len(candidates) == 0 {
+		switch {
+		case execErr != nil && wdErr != nil:
+			return "", fmt.Errorf("resolve default policy path: executable error: %v; cwd error: %v", execErr, wdErr)
+		case execErr != nil:
+			return "", fmt.Errorf("resolve default policy path: executable error: %v", execErr)
+		case wdErr != nil:
+			return "", fmt.Errorf("resolve default policy path: cwd error: %v", wdErr)
+		default:
+			return "", fmt.Errorf("resolve default policy path: no candidates available")
+		}
+	}
+
+	tried := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		tried = append(tried, candidate)
 		info, statErr := os.Stat(candidate)
 		if statErr == nil {
 			if info.IsDir() {
@@ -55,15 +95,9 @@ func ResolveDefaultPolicyPath() (string, error) {
 		if !os.IsNotExist(statErr) {
 			return "", fmt.Errorf("stat model policy %s: %w", candidate, statErr)
 		}
-
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			break
-		}
-		cur = parent
 	}
 
-	return "", fmt.Errorf("model policy file %s not found", defaultPolicyRelativePath)
+	return "", fmt.Errorf("model policy file %s not found; tried: %s", defaultPolicyRelativePath, strings.Join(tried, ", "))
 }
 
 // LoadModelPolicy parses and validates model policy YAML at path.

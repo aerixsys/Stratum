@@ -211,6 +211,26 @@ func TestChatService_RejectsTopLevelReasoningControlsBeyondExclude(t *testing.T)
 	}
 }
 
+func TestChatService_RejectsInvalidMessageShape(t *testing.T) {
+	svc := NewChatService(&fakeChatRuntime{}, nil, nil)
+	_, err := svc.Converse(context.Background(), &schema.ChatRequest{
+		Model: "m1",
+		Messages: []schema.Message{
+			{Role: "moderator", Content: json.RawMessage(`"hello"`)},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var svcErr *Error
+	if !errors.As(err, &svcErr) || svcErr.Kind != ErrorBadRequest {
+		t.Fatalf("expected bad request service error, got %v", err)
+	}
+	if svcErr.Message != `messages[0].role "moderator" is not supported` {
+		t.Fatalf("unexpected error message: %q", svcErr.Message)
+	}
+}
+
 func TestChatService_ModelLookupError(t *testing.T) {
 	svc := NewChatService(&fakeChatRuntime{}, &fakeModels{err: errors.New("lookup failed")}, nil)
 	_, err := svc.Converse(context.Background(), &schema.ChatRequest{

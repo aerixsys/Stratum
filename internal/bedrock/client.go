@@ -24,6 +24,12 @@ type bedrockRuntimeAPI interface {
 	ConverseStream(ctx context.Context, params *bedrockruntime.ConverseStreamInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseStreamOutput, error)
 }
 
+var (
+	loadAWSDefaultConfig = awsconfig.LoadDefaultConfig
+	newBedrockAPIClient  = func(cfg aws.Config) bedrockAPI { return bedrock.NewFromConfig(cfg) }
+	newRuntimeAPIClient  = func(cfg aws.Config) bedrockRuntimeAPI { return bedrockruntime.NewFromConfig(cfg) }
+)
+
 // Client wraps AWS Bedrock SDK clients.
 type Client struct {
 	Bedrock        bedrockAPI
@@ -54,14 +60,14 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		))
 	}
 
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
+	awsCfg, err := loadAWSDefaultConfig(context.Background(), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
 	return &Client{
-		Bedrock:        bedrock.NewFromConfig(awsCfg),
-		BedrockRuntime: bedrockruntime.NewFromConfig(awsCfg),
+		Bedrock:        newBedrockAPIClient(awsCfg),
+		BedrockRuntime: newRuntimeAPIClient(awsCfg),
 		Config:         cfg,
 	}, nil
 }

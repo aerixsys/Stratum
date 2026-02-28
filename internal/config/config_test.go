@@ -13,6 +13,7 @@ func setBaseEnv(t *testing.T) {
 	t.Setenv("AWS_REGION", "us-east-1")
 	t.Setenv("MAX_REQUEST_BODY_BYTES", "1048576")
 	t.Setenv("ENABLE_METRICS", "true")
+	t.Setenv("MODEL_POLICY_PATH", "")
 }
 
 func TestLoad_Success(t *testing.T) {
@@ -66,6 +67,19 @@ func TestLoad_InvalidLogLevel(t *testing.T) {
 func TestLoad_InvalidNumericBounds(t *testing.T) {
 	setBaseEnv(t)
 	t.Setenv("MAX_REQUEST_BODY_BYTES", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "MAX_REQUEST_BODY_BYTES") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_InvalidNumericFormat(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("MAX_REQUEST_BODY_BYTES", "abc")
 
 	_, err := Load()
 	if err == nil {

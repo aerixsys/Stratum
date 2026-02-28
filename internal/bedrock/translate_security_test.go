@@ -16,8 +16,13 @@ func TestIsPrivateOrLocalIP(t *testing.T) {
 		{ip: "10.0.0.1", private: true},
 		{ip: "192.168.1.1", private: true},
 		{ip: "172.20.1.1", private: true},
+		{ip: "100.64.0.1", private: true},
+		{ip: "198.51.100.10", private: true},
+		{ip: "203.0.113.20", private: true},
+		{ip: "224.0.0.1", private: true},
 		{ip: "8.8.8.8", private: false},
 		{ip: "::1", private: true},
+		{ip: "2001:db8::1", private: true},
 		{ip: "2606:4700:4700::1111", private: false},
 	}
 	for _, tt := range tests {
@@ -53,4 +58,25 @@ func TestValidateRemoteImageHost(t *testing.T) {
 	if err := validateRemoteImageHost("invalid.invalid"); err == nil {
 		t.Fatalf("expected DNS resolution error")
 	}
+}
+
+func TestValidateImageDialAddress(t *testing.T) {
+	t.Run("blocks private target", func(t *testing.T) {
+		err := validateImageDialAddress("127.0.0.1:443")
+		if err == nil || !strings.Contains(err.Error(), "private or local") {
+			t.Fatalf("expected private dial target to be blocked, got %v", err)
+		}
+	})
+
+	t.Run("allows public target", func(t *testing.T) {
+		if err := validateImageDialAddress("8.8.8.8:443"); err != nil {
+			t.Fatalf("expected public dial target to pass, got %v", err)
+		}
+	})
+
+	t.Run("rejects malformed address", func(t *testing.T) {
+		if err := validateImageDialAddress("bad-address"); err == nil {
+			t.Fatalf("expected malformed address error")
+		}
+	})
 }

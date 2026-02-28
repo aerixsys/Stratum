@@ -29,6 +29,10 @@ Optional:
 
 The script exits non-zero if any required check fails and writes a pass/fail report to `smoke-report.txt`.
 
+Validation and security behavior to verify during targeted checks:
+- malformed message roles/content shapes should return `400 invalid_request_error`
+- remote `image_url` requests resolving to private/local/reserved targets should be blocked
+
 ## Full Model Sweep
 
 Probe every model currently returned by `/v1/models` for availability diagnostics.

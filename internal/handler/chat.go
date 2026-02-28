@@ -86,7 +86,10 @@ func (h *ChatHandler) handleStream(c *gin.Context, req *schema.ChatRequest) {
 			if !ok {
 				return
 			}
-			_, _ = c.Writer.Write(data)
+			if _, err := c.Writer.Write(data); err != nil {
+				log.Printf("[stream] write error: %v", err)
+				return
+			}
 			flusher.Flush()
 		}
 	}

@@ -42,4 +42,6 @@ Export Bedrock catalog:
 ./scripts/export_aws_catalog.sh reports
 ```
 
+`export_aws_catalog.sh` reads only AWS-related keys from `.env` (`AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) using key-value parsing and does not execute `.env` as shell.
+
 Generated artifacts (`cover.out`, `smoke-report.txt`, `model-test-report-*.json`, `model-test-report-*.csv`) are gitignored and not committed.

@@ -55,6 +55,7 @@ curl http://localhost:8000/v1/models -H "Authorization: Bearer <API_KEY>"
 | `PORT` | no | `8000` | Listen port |
 | `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error` |
 | `ENABLE_METRICS` | no | `false` | Expose `/metrics` |
+| `MODEL_POLICY_PATH` | no | auto-resolve | Explicit model policy file path override |
 | `MAX_REQUEST_BODY_BYTES` | no | `10485760` | Body size limit |
 
 ## API
@@ -72,6 +73,11 @@ GET  /v1/models/{id}
 POST /v1/chat/completions
 ```
 
+Behavior notes:
+- Chat payload validation is strict. Unsupported message roles or malformed content shapes return `400` with `invalid_request_error`.
+- Remote `image_url` fetches only allow `http/https` targets that resolve and connect to public IP space (private/local/reserved targets are blocked).
+- CORS returns `Access-Control-Allow-Origin: *` for all origins.
+
 Example:
 
 ```bash
@@ -85,6 +91,10 @@ curl http://localhost:8000/v1/chat/completions \
 
 This repository ships with a curated default exclude list in `config/model-policy.yaml`.
 Edit the file and restart Stratum to widen or narrow which models are exposed.
+Resolution order at startup:
+1. `MODEL_POLICY_PATH` when set
+2. executable-relative `config/model-policy.yaml`
+3. cwd-local `config/model-policy.yaml`
 
 ```yaml
 version: 1
@@ -114,6 +124,7 @@ Generated test artifacts are local-only and gitignored:
 - `smoke-report.txt`
 - `model-test-report-<timestamp>.json`
 - `model-test-report-<timestamp>.csv`
+- reports folder usage: see [reports/README.md](reports/README.md)
 
 ## Docs
 

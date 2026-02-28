@@ -144,6 +144,79 @@ func TestChatRequest_ValidateExtraBodyCoreOnly(t *testing.T) {
 	})
 }
 
+func TestChatRequest_ValidateMessagesStrict(t *testing.T) {
+	t.Run("valid user string content", func(t *testing.T) {
+		req := ChatRequest{
+			Messages: []Message{
+				{Role: "user", Content: json.RawMessage(`"hello"`)},
+			},
+		}
+		if err := req.ValidateMessagesStrict(); err != nil {
+			t.Fatalf("unexpected validation error: %v", err)
+		}
+	})
+
+	t.Run("rejects unknown role", func(t *testing.T) {
+		req := ChatRequest{
+			Messages: []Message{
+				{Role: "moderator", Content: json.RawMessage(`"hello"`)},
+			},
+		}
+		err := req.ValidateMessagesStrict()
+		if err == nil || err.Error() != `messages[0].role "moderator" is not supported` {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("rejects tool message without tool_call_id", func(t *testing.T) {
+		req := ChatRequest{
+			Messages: []Message{
+				{Role: "tool", Content: json.RawMessage(`"output"`)},
+			},
+		}
+		err := req.ValidateMessagesStrict()
+		if err == nil || err.Error() != "messages[0].tool_call_id is required for tool role" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("rejects user content with invalid type", func(t *testing.T) {
+		req := ChatRequest{
+			Messages: []Message{
+				{Role: "user", Content: json.RawMessage(`123`)},
+			},
+		}
+		err := req.ValidateMessagesStrict()
+		if err == nil || err.Error() != "messages[0].content must be a string or an array of content parts" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("rejects user content part with unknown type", func(t *testing.T) {
+		req := ChatRequest{
+			Messages: []Message{
+				{Role: "user", Content: json.RawMessage(`[{"type":"audio","text":"x"}]`)},
+			},
+		}
+		err := req.ValidateMessagesStrict()
+		if err == nil || err.Error() != `messages[0].content[0].type "audio" is not supported` {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("rejects user image_url content without url", func(t *testing.T) {
+		req := ChatRequest{
+			Messages: []Message{
+				{Role: "user", Content: json.RawMessage(`[{"type":"image_url","image_url":{}}]`)},
+			},
+		}
+		err := req.ValidateMessagesStrict()
+		if err == nil || err.Error() != "messages[0].content[0].image_url.url is required" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 func TestReasoning_Unmarshal_TracksUnsupportedControls(t *testing.T) {
 	var req ChatRequest
 	err := json.Unmarshal([]byte(`{

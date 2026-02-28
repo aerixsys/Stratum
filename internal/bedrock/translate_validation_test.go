@@ -82,12 +82,26 @@ func TestParseUserContent_EmptyImageObject(t *testing.T) {
 		Role:    "user",
 		Content: json.RawMessage(`[{"type":"image_url"}]`),
 	}
-	blocks, err := parseUserContent(msg)
-	if err != nil {
+	_, err := parseUserContent(msg)
+	if err == nil {
+		t.Fatal("expected error for missing image_url.url")
+	}
+	if !strings.Contains(err.Error(), "image_url.url is required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(blocks) != 0 {
-		t.Fatalf("expected no blocks for empty image url, got %d", len(blocks))
+}
+
+func TestParseUserContent_UnknownPartType(t *testing.T) {
+	msg := schema.Message{
+		Role:    "user",
+		Content: json.RawMessage(`[{"type":"audio","text":"x"}]`),
+	}
+	_, err := parseUserContent(msg)
+	if err == nil {
+		t.Fatal("expected error for unsupported content part type")
+	}
+	if !strings.Contains(err.Error(), "is not supported") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
