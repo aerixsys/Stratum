@@ -3,6 +3,7 @@
 Self-hosted OpenAI-compatible API gateway for Amazon Bedrock, written in Go.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Docker Image](https://img.shields.io/badge/ghcr.io-aerixsys%2Fstratum-blue?logo=github)](https://ghcr.io/aerixsys/stratum)
 
 Stratum exposes an OpenAI-style `/v1` API and forwards requests to Amazon Bedrock. OpenAI-compatible clients typically only need a base URL and API key change.
 
@@ -20,6 +21,21 @@ Stratum exposes an OpenAI-style `/v1` API and forwards requests to Amazon Bedroc
 | Metrics | Optional Prometheus `/metrics` endpoint |
 
 ## Quick Start
+
+### Docker (GHCR — easiest)
+
+```bash
+docker pull ghcr.io/aerixsys/stratum:latest
+docker run -d \
+  --name stratum-gateway \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -e API_KEY=your-api-key \
+  -e AWS_REGION=us-east-1 \
+  -e AWS_ACCESS_KEY_ID=your-key \
+  -e AWS_SECRET_ACCESS_KEY=your-secret \
+  ghcr.io/aerixsys/stratum:latest
+```
 
 ### Binary
 
